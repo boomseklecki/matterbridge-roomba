@@ -24,6 +24,9 @@
   "dependencies": {
     "dorita980": "^4.0.0"
   },
+  "peerDependencies": {
+    "matterbridge": "^3.4.0"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "matterbridge": "^3.4.0",
