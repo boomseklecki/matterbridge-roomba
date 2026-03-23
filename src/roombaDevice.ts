@@ -395,7 +395,16 @@ export class RoombaDevice {
     }
   }
 
+  private isEndpointActive(): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.endpoint as any).construction?.status === 'active'
+  }
+
   private updateEndpointAttributes(status: Status): void {
+    if (!this.isEndpointActive()) {
+      this.log.debug('Endpoint not yet active, skipping attribute update')
+      return
+    }
     const runMode = status.running ? 1 : 0
     this.endpoint.updateAttribute('rvcRunMode', 'currentMode', runMode).catch((e: Error) => {
       this.log.debug('updateAttribute rvcRunMode failed: %s', e.message)

@@ -40,6 +40,7 @@ export declare class RoombaDevice {
     private receivedRobotStateIsComplete;
     private parseState;
     private mergeCachedStatus;
+    private isEndpointActive;
     private updateEndpointAttributes;
     private toOperationalState;
     private refreshStatusForUser;

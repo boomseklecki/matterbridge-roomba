@@ -313,7 +313,15 @@ export class RoombaDevice {
             this.roombaLastActiveTimestamp = Date.now();
         }
     }
+    isEndpointActive() {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return this.endpoint.construction?.status === 'active';
+    }
     updateEndpointAttributes(status) {
+        if (!this.isEndpointActive()) {
+            this.log.debug('Endpoint not yet active, skipping attribute update');
+            return;
+        }
         const runMode = status.running ? 1 : 0;
         this.endpoint.updateAttribute('rvcRunMode', 'currentMode', runMode).catch((e) => {
             this.log.debug('updateAttribute rvcRunMode failed: %s', e.message);
