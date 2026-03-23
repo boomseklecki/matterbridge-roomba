@@ -92,16 +92,17 @@ export class RoombaDevice {
     const globalIdleMin = (globalConfig as MatterbridgeRoombaConfig).idleWatchInterval
     this.idlePollIntervalMillis = ((info.idleWatchInterval ?? globalIdleMin ?? 15) * 60 * 1000) || DEFAULT_IDLE_POLL_INTERVAL_MILLIS
 
+    // Run modes: 1=Idle, 2=Cleaning (match MatterbridgeRvcRunModeServer's hardcoded assumptions)
     const supportedRunModes = [
-      { label: 'Idle', mode: 0, modeTags: [{ value: RvcRunModeTag.Idle }] },
-      { label: 'Cleaning', mode: 1, modeTags: [{ value: RvcRunModeTag.Cleaning }] },
+      { label: 'Idle', mode: 1, modeTags: [{ value: RvcRunModeTag.Idle }] },
+      { label: 'Cleaning', mode: 2, modeTags: [{ value: RvcRunModeTag.Cleaning }] },
     ]
 
     const supportedCleanModes = [
-      { label: 'All Rooms', mode: 0, modeTags: [{ value: RvcCleanModeTag.Auto }] },
+      { label: 'All Rooms', mode: 1, modeTags: [{ value: RvcCleanModeTag.Auto }] },
       ...this.missions.map((m, i) => ({
         label: m.name,
-        mode: i + 1,
+        mode: i + 2,
         modeTags: [{ value: RvcCleanModeTag.Vacuum }],
       })),
     ]
@@ -116,36 +117,22 @@ export class RoombaDevice {
       { operationalStateId: RvcOpState.Docked, operationalStateLabel: 'Docked' },
     ]
 
-    const vacuumEndpoint = new RoboticVacuumCleaner(
+    // RoboticVacuumCleaner constructor sets up BasicInformation and PowerSource clusters;
+    // do not call createDefaultBridgedDeviceBasicInformationClusterServer or
+    // createDefaultPowerSourceRechargeableBatteryClusterServer afterwards (would duplicate).
+    this.endpoint = new RoboticVacuumCleaner(
       info.name,
       info.blid,
       'server',
-      0,
+      1,               // currentRunMode: 1=Idle
       supportedRunModes,
-      0,
+      1,               // currentCleanMode: 1=All Rooms
       supportedCleanModes,
       null,
       null,
       RvcOpState.Docked,
       operationalStateList,
     )
-
-    vacuumEndpoint.createDefaultBridgedDeviceBasicInformationClusterServer(
-      info.name,
-      info.blid,
-      0x1234,
-      'iRobot',
-      info.model || 'Roomba',
-      1,
-      info.softwareVer || '1.0.0',
-    )
-
-    vacuumEndpoint.createDefaultPowerSourceRechargeableBatteryClusterServer(
-      200,
-      BatChargeLevel.Ok,
-    )
-
-    this.endpoint = vacuumEndpoint
 
     this.setupCommandHandlers()
   }
@@ -155,7 +142,7 @@ export class RoombaDevice {
       const { newMode } = request
       this.log.info('RvcRunMode.changeToMode → mode %s', newMode)
 
-      if (newMode === 0) {
+      if (newMode === 1) {
         // Idle
         this.connect(async (_error, roomba) => {
           if (!roomba) return
@@ -196,10 +183,10 @@ export class RoombaDevice {
       this.connect(async (_error, roomba) => {
         if (!roomba) return
         try {
-          if (newMode === 0) {
+          if (newMode === 1) {
             await roomba.clean()
           } else {
-            const mission = this.missions[newMode - 1]
+            const mission = this.missions[newMode - 2]
             if (mission) {
               await roomba.cleanRoom(mission)
             }
@@ -405,7 +392,7 @@ export class RoombaDevice {
       this.log.debug('Endpoint not yet active, skipping attribute update')
       return
     }
-    const runMode = status.running ? 1 : 0
+    const runMode = status.running ? 2 : 1
     this.endpoint.updateAttribute('rvcRunMode', 'currentMode', runMode).catch((e: Error) => {
       this.log.debug('updateAttribute rvcRunMode failed: %s', e.message)
     })
