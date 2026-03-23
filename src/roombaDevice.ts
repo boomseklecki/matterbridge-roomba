@@ -2,12 +2,15 @@ import type { PlatformConfig } from 'matterbridge'
 import type { Roomba, RobotState } from 'dorita980'
 
 import { RoboticVacuumCleaner } from 'matterbridge/devices'
-import { RvcRunMode } from '@matter/types/clusters/rvc-run-mode'
-import { RvcCleanMode } from '@matter/types/clusters/rvc-clean-mode'
-import { RvcOperationalState } from '@matter/types/clusters/rvc-operational-state'
-import { PowerSource } from '@matter/types/clusters/power-source'
 import { AnsiLogger } from 'node-ansi-logger'
 import dorita980 from 'dorita980'
+
+// Numeric constants for @matter/types enums (avoids importing nested deps)
+const RvcRunModeTag = { Idle: 16384, Cleaning: 16385 }
+const RvcCleanModeTag = { Auto: 0, Vacuum: 16385 }
+const RvcOpState = { Stopped: 0, Running: 1, Paused: 2, Error: 3, SeekingCharger: 64, Charging: 65, Docked: 66 }
+const BatChargeLevel = { Ok: 0, Warning: 1, Critical: 2 }
+const BatChargeState = { IsCharging: 1, IsNotCharging: 3 }
 
 import type { MatterbridgeRoombaConfig, NamedMission } from './settings.js'
 import type { MatterbridgeEndpoint } from 'matterbridge'
@@ -89,28 +92,28 @@ export class RoombaDevice {
     const globalIdleMin = (globalConfig as MatterbridgeRoombaConfig).idleWatchInterval
     this.idlePollIntervalMillis = ((info.idleWatchInterval ?? globalIdleMin ?? 15) * 60 * 1000) || DEFAULT_IDLE_POLL_INTERVAL_MILLIS
 
-    const supportedRunModes: RvcRunMode.ModeOption[] = [
-      { label: 'Idle', mode: 0, modeTags: [{ value: RvcRunMode.ModeTag.Idle }] },
-      { label: 'Cleaning', mode: 1, modeTags: [{ value: RvcRunMode.ModeTag.Cleaning }] },
+    const supportedRunModes = [
+      { label: 'Idle', mode: 0, modeTags: [{ value: RvcRunModeTag.Idle }] },
+      { label: 'Cleaning', mode: 1, modeTags: [{ value: RvcRunModeTag.Cleaning }] },
     ]
 
-    const supportedCleanModes: RvcCleanMode.ModeOption[] = [
-      { label: 'All Rooms', mode: 0, modeTags: [{ value: RvcCleanMode.ModeTag.Auto }] },
+    const supportedCleanModes = [
+      { label: 'All Rooms', mode: 0, modeTags: [{ value: RvcCleanModeTag.Auto }] },
       ...this.missions.map((m, i) => ({
         label: m.name,
         mode: i + 1,
-        modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }],
+        modeTags: [{ value: RvcCleanModeTag.Vacuum }],
       })),
     ]
 
-    const operationalStateList: RvcOperationalState.OperationalStateStruct[] = [
-      { operationalStateId: RvcOperationalState.OperationalState.Stopped, operationalStateLabel: 'Stopped' },
-      { operationalStateId: RvcOperationalState.OperationalState.Running, operationalStateLabel: 'Running' },
-      { operationalStateId: RvcOperationalState.OperationalState.Paused, operationalStateLabel: 'Paused' },
-      { operationalStateId: RvcOperationalState.OperationalState.Error, operationalStateLabel: 'Error' },
-      { operationalStateId: RvcOperationalState.OperationalState.SeekingCharger, operationalStateLabel: 'Seeking Charger' },
-      { operationalStateId: RvcOperationalState.OperationalState.Charging, operationalStateLabel: 'Charging' },
-      { operationalStateId: RvcOperationalState.OperationalState.Docked, operationalStateLabel: 'Docked' },
+    const operationalStateList = [
+      { operationalStateId: RvcOpState.Stopped, operationalStateLabel: 'Stopped' },
+      { operationalStateId: RvcOpState.Running, operationalStateLabel: 'Running' },
+      { operationalStateId: RvcOpState.Paused, operationalStateLabel: 'Paused' },
+      { operationalStateId: RvcOpState.Error, operationalStateLabel: 'Error' },
+      { operationalStateId: RvcOpState.SeekingCharger, operationalStateLabel: 'Seeking Charger' },
+      { operationalStateId: RvcOpState.Charging, operationalStateLabel: 'Charging' },
+      { operationalStateId: RvcOpState.Docked, operationalStateLabel: 'Docked' },
     ]
 
     const vacuumEndpoint = new RoboticVacuumCleaner(
@@ -123,7 +126,7 @@ export class RoombaDevice {
       supportedCleanModes,
       null,
       null,
-      RvcOperationalState.OperationalState.Docked,
+      RvcOpState.Docked,
       operationalStateList,
     )
 
@@ -139,7 +142,7 @@ export class RoombaDevice {
 
     vacuumEndpoint.createDefaultPowerSourceRechargeableBatteryClusterServer(
       200,
-      PowerSource.BatChargeLevel.Ok,
+      BatChargeLevel.Ok,
     )
 
     this.endpoint = vacuumEndpoint
@@ -410,17 +413,17 @@ export class RoombaDevice {
       })
 
       const chargeLevel = status.batteryLevel <= 10
-        ? PowerSource.BatChargeLevel.Critical
+        ? BatChargeLevel.Critical
         : status.batteryLevel <= 20
-          ? PowerSource.BatChargeLevel.Warning
-          : PowerSource.BatChargeLevel.Ok
+          ? BatChargeLevel.Warning
+          : BatChargeLevel.Ok
       this.endpoint.updateAttribute('powerSource', 'batChargeLevel', chargeLevel, this.log).catch((e: Error) => {
         this.log.debug('updateAttribute batChargeLevel failed: %s', e.message)
       })
 
       const chargeState = status.charging
-        ? PowerSource.BatChargeState.IsCharging
-        : PowerSource.BatChargeState.IsNotCharging
+        ? BatChargeState.IsCharging
+        : BatChargeState.IsNotCharging
       this.endpoint.updateAttribute('powerSource', 'batChargeState', chargeState, this.log).catch((e: Error) => {
         this.log.debug('updateAttribute batChargeState failed: %s', e.message)
       })
@@ -429,12 +432,12 @@ export class RoombaDevice {
     this.lastUpdatedStatus = { ...this.lastUpdatedStatus, ...status }
   }
 
-  private toOperationalState(status: Status): RvcOperationalState.OperationalState | number {
-    if (status.running) return RvcOperationalState.OperationalState.Running
-    if (status.docking) return RvcOperationalState.OperationalState.SeekingCharger
-    if (status.paused) return RvcOperationalState.OperationalState.Paused
-    if (status.charging) return RvcOperationalState.OperationalState.Charging
-    return RvcOperationalState.OperationalState.Docked
+  private toOperationalState(status: Status): number {
+    if (status.running) return RvcOpState.Running
+    if (status.docking) return RvcOpState.SeekingCharger
+    if (status.paused) return RvcOpState.Paused
+    if (status.charging) return RvcOpState.Charging
+    return RvcOpState.Docked
   }
 
   private refreshStatusForUser(): void {

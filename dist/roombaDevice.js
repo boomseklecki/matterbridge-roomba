@@ -1,9 +1,11 @@
 import { RoboticVacuumCleaner } from 'matterbridge/devices';
-import { RvcRunMode } from '@matter/types/clusters/rvc-run-mode';
-import { RvcCleanMode } from '@matter/types/clusters/rvc-clean-mode';
-import { RvcOperationalState } from '@matter/types/clusters/rvc-operational-state';
-import { PowerSource } from '@matter/types/clusters/power-source';
 import dorita980 from 'dorita980';
+// Numeric constants for @matter/types enums (avoids importing nested deps)
+const RvcRunModeTag = { Idle: 16384, Cleaning: 16385 };
+const RvcCleanModeTag = { Auto: 0, Vacuum: 16385 };
+const RvcOpState = { Stopped: 0, Running: 1, Paused: 2, Error: 3, SeekingCharger: 64, Charging: 65, Docked: 66 };
+const BatChargeLevel = { Ok: 0, Warning: 1, Critical: 2 };
+const BatChargeState = { IsCharging: 1, IsNotCharging: 3 };
 const CONNECT_TIMEOUT_MILLIS = 60_000;
 const USER_INTERESTED_MILLIS = 60_000;
 const AFTER_ACTIVE_MILLIS = 120_000;
@@ -47,29 +49,29 @@ export class RoombaDevice {
         const globalIdleMin = globalConfig.idleWatchInterval;
         this.idlePollIntervalMillis = ((info.idleWatchInterval ?? globalIdleMin ?? 15) * 60 * 1000) || DEFAULT_IDLE_POLL_INTERVAL_MILLIS;
         const supportedRunModes = [
-            { label: 'Idle', mode: 0, modeTags: [{ value: RvcRunMode.ModeTag.Idle }] },
-            { label: 'Cleaning', mode: 1, modeTags: [{ value: RvcRunMode.ModeTag.Cleaning }] },
+            { label: 'Idle', mode: 0, modeTags: [{ value: RvcRunModeTag.Idle }] },
+            { label: 'Cleaning', mode: 1, modeTags: [{ value: RvcRunModeTag.Cleaning }] },
         ];
         const supportedCleanModes = [
-            { label: 'All Rooms', mode: 0, modeTags: [{ value: RvcCleanMode.ModeTag.Auto }] },
+            { label: 'All Rooms', mode: 0, modeTags: [{ value: RvcCleanModeTag.Auto }] },
             ...this.missions.map((m, i) => ({
                 label: m.name,
                 mode: i + 1,
-                modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }],
+                modeTags: [{ value: RvcCleanModeTag.Vacuum }],
             })),
         ];
         const operationalStateList = [
-            { operationalStateId: RvcOperationalState.OperationalState.Stopped, operationalStateLabel: 'Stopped' },
-            { operationalStateId: RvcOperationalState.OperationalState.Running, operationalStateLabel: 'Running' },
-            { operationalStateId: RvcOperationalState.OperationalState.Paused, operationalStateLabel: 'Paused' },
-            { operationalStateId: RvcOperationalState.OperationalState.Error, operationalStateLabel: 'Error' },
-            { operationalStateId: RvcOperationalState.OperationalState.SeekingCharger, operationalStateLabel: 'Seeking Charger' },
-            { operationalStateId: RvcOperationalState.OperationalState.Charging, operationalStateLabel: 'Charging' },
-            { operationalStateId: RvcOperationalState.OperationalState.Docked, operationalStateLabel: 'Docked' },
+            { operationalStateId: RvcOpState.Stopped, operationalStateLabel: 'Stopped' },
+            { operationalStateId: RvcOpState.Running, operationalStateLabel: 'Running' },
+            { operationalStateId: RvcOpState.Paused, operationalStateLabel: 'Paused' },
+            { operationalStateId: RvcOpState.Error, operationalStateLabel: 'Error' },
+            { operationalStateId: RvcOpState.SeekingCharger, operationalStateLabel: 'Seeking Charger' },
+            { operationalStateId: RvcOpState.Charging, operationalStateLabel: 'Charging' },
+            { operationalStateId: RvcOpState.Docked, operationalStateLabel: 'Docked' },
         ];
-        const vacuumEndpoint = new RoboticVacuumCleaner(info.name, info.blid, 'server', 0, supportedRunModes, 0, supportedCleanModes, null, null, RvcOperationalState.OperationalState.Docked, operationalStateList);
+        const vacuumEndpoint = new RoboticVacuumCleaner(info.name, info.blid, 'server', 0, supportedRunModes, 0, supportedCleanModes, null, null, RvcOpState.Docked, operationalStateList);
         vacuumEndpoint.createDefaultBridgedDeviceBasicInformationClusterServer(info.name, info.blid, 0x1234, 'iRobot', info.model || 'Roomba', 1, info.softwareVer || '1.0.0');
-        vacuumEndpoint.createDefaultPowerSourceRechargeableBatteryClusterServer(200, PowerSource.BatChargeLevel.Ok);
+        vacuumEndpoint.createDefaultPowerSourceRechargeableBatteryClusterServer(200, BatChargeLevel.Ok);
         this.endpoint = vacuumEndpoint;
         this.setupCommandHandlers();
     }
@@ -326,16 +328,16 @@ export class RoombaDevice {
                 this.log.debug('updateAttribute batPercentRemaining failed: %s', e.message);
             });
             const chargeLevel = status.batteryLevel <= 10
-                ? PowerSource.BatChargeLevel.Critical
+                ? BatChargeLevel.Critical
                 : status.batteryLevel <= 20
-                    ? PowerSource.BatChargeLevel.Warning
-                    : PowerSource.BatChargeLevel.Ok;
+                    ? BatChargeLevel.Warning
+                    : BatChargeLevel.Ok;
             this.endpoint.updateAttribute('powerSource', 'batChargeLevel', chargeLevel, this.log).catch((e) => {
                 this.log.debug('updateAttribute batChargeLevel failed: %s', e.message);
             });
             const chargeState = status.charging
-                ? PowerSource.BatChargeState.IsCharging
-                : PowerSource.BatChargeState.IsNotCharging;
+                ? BatChargeState.IsCharging
+                : BatChargeState.IsNotCharging;
             this.endpoint.updateAttribute('powerSource', 'batChargeState', chargeState, this.log).catch((e) => {
                 this.log.debug('updateAttribute batChargeState failed: %s', e.message);
             });
@@ -344,14 +346,14 @@ export class RoombaDevice {
     }
     toOperationalState(status) {
         if (status.running)
-            return RvcOperationalState.OperationalState.Running;
+            return RvcOpState.Running;
         if (status.docking)
-            return RvcOperationalState.OperationalState.SeekingCharger;
+            return RvcOpState.SeekingCharger;
         if (status.paused)
-            return RvcOperationalState.OperationalState.Paused;
+            return RvcOpState.Paused;
         if (status.charging)
-            return RvcOperationalState.OperationalState.Charging;
-        return RvcOperationalState.OperationalState.Docked;
+            return RvcOpState.Charging;
+        return RvcOpState.Docked;
     }
     refreshStatusForUser() {
         this.userLastInterestedTimestamp = Date.now();
