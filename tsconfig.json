@@ -8,6 +8,7 @@
     "moduleResolution": "nodenext",
     "rootDir": "./src",
     "outDir": "./dist",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "resolveJsonModule": true,
     "allowJs": false,
     "declaration": true,
