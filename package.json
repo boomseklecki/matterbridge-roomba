@@ -29,7 +29,6 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "matterbridge": "^3.4.0",
     "shx": "^0.3.4",
     "typescript": "^5.8.0"
   },
