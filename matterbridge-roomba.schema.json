@@ -15,14 +15,12 @@
     "email": {
       "title": "iRobot Account Email",
       "description": "Email address for iRobot cloud account. Optional if all devices are configured manually.",
-      "type": "string",
-      "required": false
+      "type": "string"
     },
     "password": {
       "title": "iRobot Account Password",
       "description": "Password for iRobot cloud account. Optional if all devices are configured manually.",
-      "type": "string",
-      "required": false
+      "type": "string"
     },
     "idleWatchInterval": {
       "title": "Idle Watch Interval (minutes)",
@@ -36,30 +34,27 @@
       "type": "array",
       "items": {
         "type": "object",
+        "required": ["name", "blid", "robotpwd", "ipaddress"],
         "properties": {
           "name": {
             "title": "Device Name",
             "description": "Display name for this Roomba.",
-            "type": "string",
-            "required": true
+            "type": "string"
           },
           "blid": {
             "title": "Robot ID (blid)",
             "description": "The Roomba's robot ID (blid).",
-            "type": "string",
-            "required": true
+            "type": "string"
           },
           "robotpwd": {
             "title": "Robot Password",
             "description": "The local MQTT password for this Roomba.",
-            "type": "string",
-            "required": true
+            "type": "string"
           },
           "ipaddress": {
             "title": "IP Address",
             "description": "Local IP address of this Roomba.",
-            "type": "string",
-            "required": true
+            "type": "string"
           },
           "stopBehaviour": {
             "title": "Stop Behaviour",
@@ -79,21 +74,19 @@
             "type": "array",
             "items": {
               "type": "object",
+              "required": ["name", "pmap_id", "user_pmapv_id"],
               "properties": {
                 "name": {
                   "title": "Mission Name",
-                  "type": "string",
-                  "required": true
+                  "type": "string"
                 },
                 "pmap_id": {
                   "title": "Persistent Map ID",
-                  "type": "string",
-                  "required": true
+                  "type": "string"
                 },
                 "user_pmapv_id": {
                   "title": "User Persistent Map Version ID",
-                  "type": "string",
-                  "required": true
+                  "type": "string"
                 },
                 "ordered": {
                   "title": "Ordered",
@@ -105,16 +98,15 @@
                   "type": "array",
                   "items": {
                     "type": "object",
+                    "required": ["region_id", "type"],
                     "properties": {
                       "region_id": {
                         "title": "Region ID",
-                        "type": "string",
-                        "required": true
+                        "type": "string"
                       },
                       "type": {
                         "title": "Region Type",
-                        "type": "string",
-                        "required": true
+                        "type": "string"
                       }
                     }
                   }
