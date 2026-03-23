@@ -13,6 +13,12 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "files": [
+    "dist/",
+    "src/",
+    "matterbridge-roomba.schema.json",
+    "matterbridge-roomba.config.json"
+  ],
   "engines": {
     "node": ">=20.0.0 <21.0.0 || >=22.0.0 <23.0.0 || >=24.0.0 <25.0.0"
   },
