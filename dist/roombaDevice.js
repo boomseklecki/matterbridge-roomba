@@ -315,16 +315,16 @@ export class RoombaDevice {
     }
     updateEndpointAttributes(status) {
         const runMode = status.running ? 1 : 0;
-        this.endpoint.updateAttribute('rvcRunMode', 'currentMode', runMode, this.log).catch((e) => {
+        this.endpoint.updateAttribute('rvcRunMode', 'currentMode', runMode).catch((e) => {
             this.log.debug('updateAttribute rvcRunMode failed: %s', e.message);
         });
         const opState = this.toOperationalState(status);
-        this.endpoint.updateAttribute('rvcOperationalState', 'operationalState', opState, this.log).catch((e) => {
+        this.endpoint.updateAttribute('rvcOperationalState', 'operationalState', opState).catch((e) => {
             this.log.debug('updateAttribute rvcOperationalState failed: %s', e.message);
         });
         if (status.batteryLevel !== undefined) {
             const batPct = Math.min(200, status.batteryLevel * 2);
-            this.endpoint.updateAttribute('powerSource', 'batPercentRemaining', batPct, this.log).catch((e) => {
+            this.endpoint.updateAttribute('powerSource', 'batPercentRemaining', batPct).catch((e) => {
                 this.log.debug('updateAttribute batPercentRemaining failed: %s', e.message);
             });
             const chargeLevel = status.batteryLevel <= 10
@@ -332,13 +332,13 @@ export class RoombaDevice {
                 : status.batteryLevel <= 20
                     ? BatChargeLevel.Warning
                     : BatChargeLevel.Ok;
-            this.endpoint.updateAttribute('powerSource', 'batChargeLevel', chargeLevel, this.log).catch((e) => {
+            this.endpoint.updateAttribute('powerSource', 'batChargeLevel', chargeLevel).catch((e) => {
                 this.log.debug('updateAttribute batChargeLevel failed: %s', e.message);
             });
             const chargeState = status.charging
                 ? BatChargeState.IsCharging
                 : BatChargeState.IsNotCharging;
-            this.endpoint.updateAttribute('powerSource', 'batChargeState', chargeState, this.log).catch((e) => {
+            this.endpoint.updateAttribute('powerSource', 'batChargeState', chargeState).catch((e) => {
                 this.log.debug('updateAttribute batChargeState failed: %s', e.message);
             });
         }
