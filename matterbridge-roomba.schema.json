@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Matterbridge Roomba",
+  "description": "Matterbridge plugin for iRobot Roomba devices",
+  "type": "object",
+  "properties": {
+    "name": {
+      "description": "Plugin name",
+      "type": "string"
+    },
+    "type": {
+      "description": "Plugin type",
+      "type": "string"
+    },
+    "email": {
+      "title": "iRobot Account Email",
+      "description": "Email address for iRobot cloud account. Optional if all devices are configured manually.",
+      "type": "string",
+      "required": false
+    },
+    "password": {
+      "title": "iRobot Account Password",
+      "description": "Password for iRobot cloud account. Optional if all devices are configured manually.",
+      "type": "string",
+      "required": false
+    },
+    "idleWatchInterval": {
+      "title": "Idle Watch Interval (minutes)",
+      "description": "How often to poll Roomba when idle, in minutes. Default: 15.",
+      "type": "number",
+      "default": 15
+    },
+    "devices": {
+      "title": "Devices",
+      "description": "Manual device configuration. Required when not using cloud credentials.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "title": "Device Name",
+            "description": "Display name for this Roomba.",
+            "type": "string",
+            "required": true
+          },
+          "blid": {
+            "title": "Robot ID (blid)",
+            "description": "The Roomba's robot ID (blid).",
+            "type": "string",
+            "required": true
+          },
+          "robotpwd": {
+            "title": "Robot Password",
+            "description": "The local MQTT password for this Roomba.",
+            "type": "string",
+            "required": true
+          },
+          "ipaddress": {
+            "title": "IP Address",
+            "description": "Local IP address of this Roomba.",
+            "type": "string",
+            "required": true
+          },
+          "stopBehaviour": {
+            "title": "Stop Behaviour",
+            "description": "What to do when the robot is stopped: send home or just pause.",
+            "type": "string",
+            "enum": ["home", "pause"],
+            "default": "home"
+          },
+          "idleWatchInterval": {
+            "title": "Idle Watch Interval (minutes)",
+            "description": "Override the global idle watch interval for this device.",
+            "type": "number"
+          },
+          "missions": {
+            "title": "Named Missions",
+            "description": "Named cleaning missions available as clean modes.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "title": "Mission Name",
+                  "type": "string",
+                  "required": true
+                },
+                "pmap_id": {
+                  "title": "Persistent Map ID",
+                  "type": "string",
+                  "required": true
+                },
+                "user_pmapv_id": {
+                  "title": "User Persistent Map Version ID",
+                  "type": "string",
+                  "required": true
+                },
+                "ordered": {
+                  "title": "Ordered",
+                  "type": "number",
+                  "default": 1
+                },
+                "regions": {
+                  "title": "Regions",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "region_id": {
+                        "title": "Region ID",
+                        "type": "string",
+                        "required": true
+                      },
+                      "type": {
+                        "title": "Region Type",
+                        "type": "string",
+                        "required": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
