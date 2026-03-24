@@ -73,9 +73,19 @@ export class RoombaDevice {
         // RoboticVacuumCleaner constructor sets up BasicInformation and PowerSource clusters;
         // do not call createDefaultBridgedDeviceBasicInformationClusterServer or
         // createDefaultPowerSourceRechargeableBatteryClusterServer afterwards (would duplicate).
+        const supportedAreas = this.missions.map((m, i) => ({
+            areaId: i + 1,
+            mapId: null,
+            areaInfo: {
+                locationInfo: { locationName: m.name, floorNumber: null, areaType: null },
+                landmarkInfo: null,
+            },
+        }));
         this.endpoint = new RoboticVacuumCleaner(info.name, info.blid, 'server', 1, // currentRunMode: 1=Idle
         supportedRunModes, 1, // currentCleanMode: 1=All Rooms
-        supportedCleanModes, null, null, RvcOpState.Docked, operationalStateList);
+        supportedCleanModes, null, null, RvcOpState.Docked, operationalStateList, supportedAreas, [], // selectedAreas
+        undefined, // currentArea
+        []);
         this.setupCommandHandlers();
     }
     setupCommandHandlers() {
