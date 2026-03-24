@@ -1,0 +1,36 @@
+{
+  "name": "matterbridge-roomba",
+  "version": "1.0.0",
+  "description": "Matterbridge plugin for iRobot Roomba robotic vacuum cleaners",
+  "author": "Rashed97",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/module.js",
+  "types": "./dist/module.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Rashed97/matterbridge-roomba.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Rashed97/matterbridge-roomba/issues"
+  },
+  "engines": {
+    "matterbridge": ">=3.6.1",
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "start": "tsc && matterbridge -childbridge",
+    "dev:link": "npm link matterbridge",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "dorita980": "npm:@karlvr/dorita980@^3.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.7.0"
+  }
+}

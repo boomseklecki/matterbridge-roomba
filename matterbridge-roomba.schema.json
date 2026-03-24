@@ -1,0 +1,68 @@
+{
+  "title": "Matterbridge Roomba Plugin",
+  "description": "matterbridge-roomba v.1.0.0 - iRobot Roomba vacuum cleaner plugin",
+  "type": "object",
+  "properties": {
+    "name": {
+      "description": "Plugin name",
+      "type": "string",
+      "readOnly": true
+    },
+    "type": {
+      "description": "Plugin type",
+      "type": "string",
+      "readOnly": true
+    },
+    "debug": {
+      "description": "Enable debug logging",
+      "type": "boolean",
+      "default": false
+    },
+    "unregisterOnShutdown": {
+      "description": "Unregister all devices on shutdown",
+      "type": "boolean",
+      "default": false
+    },
+    "devices": {
+      "description": "List of Roomba devices to connect to",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Display name for the device",
+            "type": "string"
+          },
+          "blid": {
+            "description": "Robot BLID (unique identifier). Found via 'get-roomba-password' or iRobot cloud.",
+            "type": "string"
+          },
+          "password": {
+            "description": "Robot password for local MQTT connection",
+            "type": "string"
+          },
+          "ipAddress": {
+            "description": "Robot IP address on your local network",
+            "type": "string"
+          },
+          "refreshInterval": {
+            "description": "State polling interval in seconds (while active)",
+            "type": "number",
+            "default": 10,
+            "minimum": 5,
+            "maximum": 300
+          },
+          "idleRefreshInterval": {
+            "description": "State polling interval in seconds (while idle/docked)",
+            "type": "number",
+            "default": 120,
+            "minimum": 30,
+            "maximum": 3600
+          }
+        },
+        "required": ["blid", "password", "ipAddress"]
+      }
+    }
+  },
+  "required": ["name", "type", "devices"]
+}

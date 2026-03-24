@@ -1,0 +1,8 @@
+{
+  "name": "matterbridge-roomba",
+  "type": "DynamicPlatform",
+  "version": "1.0.0",
+  "debug": false,
+  "unregisterOnShutdown": false,
+  "devices": []
+}
