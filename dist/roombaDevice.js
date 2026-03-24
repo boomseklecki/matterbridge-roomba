@@ -54,7 +54,7 @@ export class RoombaDevice {
             { label: 'Cleaning', mode: 2, modeTags: [{ value: RvcRunModeTag.Cleaning }] },
         ];
         const supportedCleanModes = [
-            { label: 'All Rooms', mode: 1, modeTags: [{ value: RvcCleanModeTag.Auto }] },
+            { label: 'All Rooms', mode: 1, modeTags: [{ value: RvcCleanModeTag.Vacuum }] },
             ...this.missions.map((m, i) => ({
                 label: m.name,
                 mode: i + 2,
