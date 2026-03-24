@@ -2,7 +2,7 @@ import type { PlatformConfig } from 'matterbridge'
 import type { Roomba, RobotState } from 'dorita980'
 
 import { RoboticVacuumCleaner } from 'matterbridge/devices'
-import { AnsiLogger } from 'node-ansi-logger'
+import { AnsiLogger } from 'matterbridge/logger'
 import dorita980 from 'dorita980'
 
 // Numeric constants for @matter/types enums (avoids importing nested deps)

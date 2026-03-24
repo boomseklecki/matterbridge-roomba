@@ -1,6 +1,6 @@
 import type { PlatformConfig, PlatformMatterbridge } from 'matterbridge'
 
-import { AnsiLogger } from 'node-ansi-logger'
+import { AnsiLogger } from 'matterbridge/logger'
 
 import { RoombaPlatform } from './platform.js'
 

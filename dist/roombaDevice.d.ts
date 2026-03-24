@@ -1,5 +1,5 @@
 import type { PlatformConfig } from 'matterbridge';
-import { AnsiLogger } from 'node-ansi-logger';
+import { AnsiLogger } from 'matterbridge/logger';
 import type { NamedMission } from './settings.js';
 import type { MatterbridgeEndpoint } from 'matterbridge';
 export interface DeviceInfo {

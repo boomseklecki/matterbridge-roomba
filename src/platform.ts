@@ -1,7 +1,7 @@
 import type { PlatformConfig, PlatformMatterbridge } from 'matterbridge'
 
 import { MatterbridgeDynamicPlatform } from 'matterbridge'
-import { AnsiLogger } from 'node-ansi-logger'
+import { AnsiLogger, LogLevel } from 'matterbridge/logger'
 
 import type { MatterbridgeRoombaConfig } from './settings.js'
 
@@ -110,5 +110,17 @@ export class RoombaPlatform extends MatterbridgeDynamicPlatform {
       device.stopPolling()
       device.disconnect()
     }
+
+    if (this.config.unregisterOnShutdown) {
+      await this.unregisterAllDevices()
+    }
+  }
+
+  override async onChangeLoggerLevel(logLevel: LogLevel): Promise<void> {
+    this.log.logLevel = logLevel
+  }
+
+  override async onConfigChanged(_config: PlatformConfig): Promise<void> {
+    this.log.info('Config changed — restart Matterbridge to apply')
   }
 }

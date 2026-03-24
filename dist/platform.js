@@ -81,6 +81,15 @@ export class RoombaPlatform extends MatterbridgeDynamicPlatform {
             device.stopPolling();
             device.disconnect();
         }
+        if (this.config.unregisterOnShutdown) {
+            await this.unregisterAllDevices();
+        }
+    }
+    async onChangeLoggerLevel(logLevel) {
+        this.log.logLevel = logLevel;
+    }
+    async onConfigChanged(_config) {
+        this.log.info('Config changed — restart Matterbridge to apply');
     }
 }
 //# sourceMappingURL=platform.js.map
