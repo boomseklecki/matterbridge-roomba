@@ -33,6 +33,8 @@ export declare class RoombaDevice {
     private lastPollInterval;
     private stopped;
     constructor(info: DeviceInfo, globalConfig: PlatformConfig, log: AnsiLogger);
+    private selectedMissions;
+    private startClean;
     private setupCommandHandlers;
     private connectedRoomba;
     private connect;

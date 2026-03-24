@@ -99,12 +99,7 @@ export class RoombaDevice {
     ]
 
     const supportedCleanModes = [
-      { label: 'All Rooms', mode: 1, modeTags: [{ value: RvcCleanModeTag.Vacuum }] },
-      ...this.missions.map((m, i) => ({
-        label: m.name,
-        mode: i + 2,
-        modeTags: [{ value: RvcCleanModeTag.Vacuum }],
-      })),
+      { label: 'Vacuum', mode: 1, modeTags: [{ value: RvcCleanModeTag.Vacuum }] },
     ]
 
     const operationalStateList = [
@@ -150,6 +145,50 @@ export class RoombaDevice {
     this.setupCommandHandlers()
   }
 
+  private selectedMissions(): NamedMission[] {
+    const selected = this.endpoint.getAttribute('serviceArea', 'selectedAreas') as number[] | undefined
+    if (!selected || selected.length === 0) return []
+    return selected.flatMap(id => {
+      const m = this.missions[id - 1]
+      return m ? [m] : []
+    })
+  }
+
+  private async startClean(roomba: import('dorita980').Roomba): Promise<void> {
+    const missions = this.selectedMissions()
+
+    if (missions.length === 0) {
+      this.log.info('No areas selected — full vacuum')
+      await roomba.clean()
+      return
+    }
+
+    const withFavorite = missions.filter(m => m.favorite_id != null)
+    const withoutFavorite = missions.filter(m => m.favorite_id == null)
+
+    if (withFavorite.length > 0) {
+      if (withFavorite.length > 1 || withoutFavorite.length > 0) {
+        this.log.warn(
+          'Multiple missions selected with favorite_id — running first (%s), ignoring others',
+          withFavorite[0].name,
+        )
+      }
+      this.log.info('Starting mission: %s (favorite_id: %s)', withFavorite[0].name, withFavorite[0].favorite_id)
+      await roomba.cleanRoom(withFavorite[0])
+      return
+    }
+
+    // All selected missions have no favorite_id — combine their regions
+    const combined = {
+      pmap_id: withoutFavorite[0].pmap_id,
+      user_pmapv_id: withoutFavorite[0].user_pmapv_id,
+      ordered: withoutFavorite[0].ordered ?? 1,
+      regions: withoutFavorite.flatMap(m => m.regions),
+    }
+    this.log.info('Starting combined rooms: %s', withoutFavorite.map(m => m.name).join(', '))
+    await roomba.cleanRoom(combined)
+  }
+
   private setupCommandHandlers(): void {
     this.endpoint.addCommandHandler('RvcRunMode.changeToMode', async ({ request }) => {
       const { newMode } = request
@@ -179,7 +218,7 @@ export class RoombaDevice {
             if (this.cachedStatus.paused) {
               await roomba.resume()
             } else {
-              await roomba.clean()
+              await this.startClean(roomba)
             }
             this.refreshStatusForUser()
           } catch (e) {
@@ -189,26 +228,8 @@ export class RoombaDevice {
       }
     })
 
-    this.endpoint.addCommandHandler('RvcCleanMode.changeToMode', async ({ request }) => {
-      const { newMode } = request
-      this.log.info('RvcCleanMode.changeToMode → mode %s', newMode)
-
-      this.connect(async (_error, roomba) => {
-        if (!roomba) return
-        try {
-          if (newMode === 1) {
-            await roomba.clean()
-          } else {
-            const mission = this.missions[newMode - 2]
-            if (mission) {
-              await roomba.cleanRoom(mission)
-            }
-          }
-          this.refreshStatusForUser()
-        } catch (e) {
-          this.log.warn('CleanMode command failed: %s', (e as Error).message)
-        }
-      })
+    this.endpoint.addCommandHandler('RvcCleanMode.changeToMode', async () => {
+      // Only one clean mode (Vacuum); actual mission is determined by ServiceArea selectedAreas.
     })
 
     this.endpoint.addCommandHandler('RvcOperationalState.pause', async () => {
