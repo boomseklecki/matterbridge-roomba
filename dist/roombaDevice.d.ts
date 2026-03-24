@@ -33,6 +33,8 @@ export declare class RoombaDevice {
     private currentPollTimeout;
     private lastPollInterval;
     private stopped;
+    private readonly debugMode;
+    private lastCommandLogged;
     constructor(info: DeviceInfo, globalConfig: PlatformConfig, log: AnsiLogger);
     private static readonly EVERYWHERE_AREA_ID;
     private selectedMissions;

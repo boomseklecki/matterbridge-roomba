@@ -81,6 +81,8 @@ export class RoombaDevice {
   private currentPollTimeout: ReturnType<typeof setTimeout> | undefined
   private lastPollInterval = 0
   private stopped = false
+  private readonly debugMode: boolean
+  private lastCommandLogged = false
 
   constructor(info: DeviceInfo, globalConfig: PlatformConfig, log: AnsiLogger) {
     this.log = log
@@ -92,6 +94,7 @@ export class RoombaDevice {
 
     const globalIdleMin = (globalConfig as MatterbridgeRoombaConfig).idleWatchInterval
     this.idlePollIntervalMillis = ((info.idleWatchInterval ?? globalIdleMin ?? 15) * 60 * 1000) || DEFAULT_IDLE_POLL_INTERVAL_MILLIS
+    this.debugMode = (globalConfig as MatterbridgeRoombaConfig).debug ?? false
 
     // Run modes: 1=Idle, 2=Cleaning (match MatterbridgeRvcRunModeServer's hardcoded assumptions)
     const supportedRunModes = [
@@ -335,7 +338,7 @@ export class RoombaDevice {
         clearTimeout(timeout)
         if (failed) return
         connected = true
-        this.log.debug('Connected to Roomba in %ims', Date.now() - startConnecting)
+        this.log.debug('Connected to Roomba in %ims (cipher: %s)', Date.now() - startConnecting, ROBOT_CIPHERS[this.currentCipherIndex])
         resolve({ roomba, useCount: 0 })
       }
       roomba.on('connect', onConnect)
@@ -366,6 +369,9 @@ export class RoombaDevice {
     if (this.receivedRobotStateIsComplete(state)) {
       const parsed = this.parseState(state)
       this.mergeCachedStatus(parsed)
+    } else {
+      const missing = (['batPct', 'bin', 'cleanMissionStatus'] as const).filter(f => state[f] === undefined)
+      this.log.debug('Incomplete state, waiting for: %s', missing.join(', '))
     }
   }
 
@@ -507,9 +513,9 @@ export class RoombaDevice {
 
         this.refreshState(() => {
           if (this.stopped) return
-          const interval = this.currentPollInterval()
+          const { interval, reason } = this.currentPollInterval()
           this.lastPollInterval = interval
-          this.log.debug('Next Roomba poll in %is', interval / 1000)
+          this.log.debug('Next poll in %is (%s)', interval / 1000, reason)
 
           if (this.currentPollTimeout) {
             clearTimeout(this.currentPollTimeout)
@@ -560,6 +566,18 @@ export class RoombaDevice {
             this.receiveRobotState(state)
             roomba.off('state', updateState)
             clearTimeout(timeout)
+
+            if (this.debugMode && !this.lastCommandLogged) {
+              this.lastCommandLogged = true
+              roomba.getRobotState(['lastCommand']).then((s: RobotState) => {
+                if (s.lastCommand) {
+                  this.log.info('lastCommand (debug): %s', JSON.stringify(s.lastCommand, null, 2))
+                } else {
+                  this.log.info('lastCommand (debug): no lastCommand in robot state')
+                }
+              }).catch((e: Error) => this.log.debug('lastCommand query failed: %s', e.message))
+            }
+
             resolve()
             callback()
           }
@@ -569,18 +587,18 @@ export class RoombaDevice {
     })
   }
 
-  private currentPollInterval(): number {
+  private currentPollInterval(): { interval: number; reason: string } {
     const timeSinceUserLastInterested = Date.now() - this.userLastInterestedTimestamp
     if (timeSinceUserLastInterested < USER_INTERESTED_MILLIS) {
-      return 5_000
+      return { interval: 5_000, reason: 'user active' }
     }
 
     const timeSinceLastActive = Date.now() - this.roombaLastActiveTimestamp
     if (this.isActive() || timeSinceLastActive < AFTER_ACTIVE_MILLIS) {
-      return 10_000
+      return { interval: 10_000, reason: 'robot active' }
     }
 
-    return this.idlePollIntervalMillis
+    return { interval: this.idlePollIntervalMillis, reason: 'idle' }
   }
 
   private isActive(): boolean {

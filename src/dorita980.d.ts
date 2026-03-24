@@ -13,6 +13,13 @@ declare module 'dorita980' {
       initiator: string
       nMssn: number
     }
+    lastCommand?: {
+      pmap_id?: string
+      user_pmapv_id?: string
+      ordered?: number
+      favorite_id?: string
+      regions?: { region_id: string; type: string }[]
+    }
   }
 
   export interface Roomba {
