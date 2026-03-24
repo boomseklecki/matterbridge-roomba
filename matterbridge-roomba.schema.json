@@ -93,6 +93,11 @@
                   "type": "number",
                   "default": 1
                 },
+                "favorite_id": {
+                  "title": "Favorite ID",
+                  "description": "Optional favorite_id to include with the start command.",
+                  "type": "string"
+                },
                 "regions": {
                   "title": "Regions",
                   "type": "array",
@@ -106,7 +111,34 @@
                       },
                       "type": {
                         "title": "Region Type",
-                        "type": "string"
+                        "type": "string",
+                        "default": "rid"
+                      },
+                      "params": {
+                        "title": "Region Params",
+                        "type": "object",
+                        "properties": {
+                          "noAutoPasses": {
+                            "title": "No Auto Passes",
+                            "type": "boolean"
+                          },
+                          "twoPass": {
+                            "title": "Two Pass",
+                            "type": "boolean"
+                          },
+                          "carpetBoost": {
+                            "title": "Carpet Boost",
+                            "type": "boolean"
+                          },
+                          "vacHigh": {
+                            "title": "High Vacuum",
+                            "type": "boolean"
+                          },
+                          "gentleMode": {
+                            "title": "Gentle Mode",
+                            "type": "number"
+                          }
+                        }
                       }
                     }
                   }

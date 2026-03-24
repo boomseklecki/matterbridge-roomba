@@ -19,12 +19,16 @@ export interface NamedMission {
     pmap_id: string;
     user_pmapv_id: string;
     ordered?: number;
+    favorite_id?: string;
     regions: {
         region_id: string;
         type: string;
         params?: {
             noAutoPasses?: boolean;
             twoPass?: boolean;
+            carpetBoost?: boolean;
+            vacHigh?: boolean;
+            gentleMode?: number;
         };
     }[];
 }
