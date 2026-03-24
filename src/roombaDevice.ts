@@ -119,7 +119,7 @@ export class RoombaDevice {
     const supportedAreas = [
       {
         areaId: 1,
-        mapId: null,
+        mapId: 1,
         areaInfo: {
           locationInfo: { locationName: 'Everywhere', floorNumber: null, areaType: null },
           landmarkInfo: null,
@@ -127,13 +127,15 @@ export class RoombaDevice {
       },
       ...this.missions.map((m, i) => ({
         areaId: i + 2,
-        mapId: null,
+        mapId: 1,
         areaInfo: {
           locationInfo: { locationName: m.name, floorNumber: null, areaType: null },
           landmarkInfo: null,
         },
       })),
     ]
+
+    const supportedMaps = [{ mapId: 1, name: info.name }]
 
     this.endpoint = new RoboticVacuumCleaner(
       info.name,
@@ -150,7 +152,7 @@ export class RoombaDevice {
       supportedAreas,
       [],              // selectedAreas
       undefined,       // currentArea
-      [],              // supportedMaps
+      supportedMaps,
     )
 
     this.setupCommandHandlers()
