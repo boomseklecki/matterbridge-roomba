@@ -62,13 +62,13 @@ export class RoombaDevice {
             })),
         ];
         const operationalStateList = [
-            { operationalStateId: RvcOpState.Stopped, operationalStateLabel: 'Stopped' },
-            { operationalStateId: RvcOpState.Running, operationalStateLabel: 'Running' },
-            { operationalStateId: RvcOpState.Paused, operationalStateLabel: 'Paused' },
-            { operationalStateId: RvcOpState.Error, operationalStateLabel: 'Error' },
-            { operationalStateId: RvcOpState.SeekingCharger, operationalStateLabel: 'Seeking Charger' },
-            { operationalStateId: RvcOpState.Charging, operationalStateLabel: 'Charging' },
-            { operationalStateId: RvcOpState.Docked, operationalStateLabel: 'Docked' },
+            { operationalStateId: RvcOpState.Stopped },
+            { operationalStateId: RvcOpState.Running },
+            { operationalStateId: RvcOpState.Paused },
+            { operationalStateId: RvcOpState.Error },
+            { operationalStateId: RvcOpState.SeekingCharger },
+            { operationalStateId: RvcOpState.Charging },
+            { operationalStateId: RvcOpState.Docked },
         ];
         // RoboticVacuumCleaner constructor sets up BasicInformation and PowerSource clusters;
         // do not call createDefaultBridgedDeviceBasicInformationClusterServer or
