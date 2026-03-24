@@ -153,6 +153,18 @@
           }
         }
       }
+    },
+    "debug": {
+      "title": "Debug mode",
+      "description": "When enabled, logs the robot's lastCommand payload (pmap_id, regions, favorite_id) on first connection — useful for populating mission config.",
+      "type": "boolean",
+      "default": false
+    },
+    "unregisterOnShutdown": {
+      "title": "Unregister devices on shutdown",
+      "description": "Remove all devices from the Matter fabric when Matterbridge shuts down.",
+      "type": "boolean",
+      "default": false
     }
   }
 }
