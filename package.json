@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Matterbridge plugin for iRobot Roomba devices",
   "author": "boomseklecki",
+  "homepage": "https://github.com/boomseklecki/matterbridge-roomba#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/boomseklecki/matterbridge-roomba.git"
+  },
+  "bugs": {
+    "url": "https://github.com/boomseklecki/matterbridge-roomba/issues"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
@@ -17,7 +25,8 @@
     "dist/",
     "src/",
     "matterbridge-roomba.schema.json",
-    "matterbridge-roomba.config.json"
+    "matterbridge-roomba.config.json",
+    "README.md"
   ],
   "engines": {
     "node": ">=20.0.0 <21.0.0 || >=22.0.0 <23.0.0 || >=24.0.0 <25.0.0"
@@ -25,7 +34,8 @@
   "scripts": {
     "build": "shx rm -rf dist && tsc",
     "buildProduction": "shx rm -rf dist && tsc --project tsconfig.production.json",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "dorita980": "^4.0.0"
