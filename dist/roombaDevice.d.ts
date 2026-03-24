@@ -5,6 +5,7 @@ import type { MatterbridgeEndpoint } from 'matterbridge';
 export interface DeviceInfo {
     name: string;
     blid: string;
+    serialNumber?: string;
     password: string;
     ip: string;
     model: string;

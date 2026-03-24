@@ -12,6 +12,7 @@ export interface DeviceConfig {
   blid: string
   robotpwd: string
   ipaddress: string
+  serialNumber?: string
   missions?: NamedMission[]
   stopBehaviour?: 'home' | 'pause'
   idleWatchInterval?: number

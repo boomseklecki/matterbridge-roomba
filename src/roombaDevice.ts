@@ -26,6 +26,7 @@ const DEFAULT_IDLE_POLL_INTERVAL_MILLIS = 15 * 60 * 1000
 export interface DeviceInfo {
   name: string
   blid: string
+  serialNumber?: string
   password: string
   ip: string
   model: string
@@ -126,7 +127,7 @@ export class RoombaDevice {
 
     this.endpoint = new RoboticVacuumCleaner(
       info.name,
-      info.blid,
+      info.serialNumber ?? info.blid,
       'server',
       1,               // currentRunMode: 1=Idle
       supportedRunModes,

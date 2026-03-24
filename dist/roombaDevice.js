@@ -76,7 +76,7 @@ export class RoombaDevice {
                 landmarkInfo: null,
             },
         }));
-        this.endpoint = new RoboticVacuumCleaner(info.name, info.blid, 'server', 1, // currentRunMode: 1=Idle
+        this.endpoint = new RoboticVacuumCleaner(info.name, info.serialNumber ?? info.blid, 'server', 1, // currentRunMode: 1=Idle
         supportedRunModes, 1, // currentCleanMode: 1=All Rooms
         supportedCleanModes, null, null, RvcOpState.Docked, operationalStateList, supportedAreas, [], // selectedAreas
         undefined, // currentArea

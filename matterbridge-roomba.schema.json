@@ -56,6 +56,11 @@
             "description": "Local IP address of this Roomba.",
             "type": "string"
           },
+          "serialNumber": {
+            "title": "Serial Number",
+            "description": "Serial number printed on the robot. Auto-populated from cloud discovery if available.",
+            "type": "string"
+          },
           "stopBehaviour": {
             "title": "Stop Behaviour",
             "description": "What to do when the robot is stopped: send home or just pause.",

@@ -23,7 +23,7 @@ export class RoombaPlatform extends MatterbridgeDynamicPlatform {
       const configDevices = config.devices ?? []
       this.log.info('Config devices: %d, email configured: %s', configDevices.length, config.email ? 'yes' : 'no')
 
-      let discovered: { name: string; blid: string; password: string; ip: string; model: string; softwareVer?: string }[] = []
+      let discovered: { name: string; blid: string; serialNumber?: string; password: string; ip: string; model: string; softwareVer?: string }[] = []
 
       if (config.email && config.password) {
         try {
@@ -31,6 +31,7 @@ export class RoombaPlatform extends MatterbridgeDynamicPlatform {
           discovered = robots.map(r => ({
             name: r.name,
             blid: r.blid,
+            serialNumber: r.info?.serialNum,
             password: r.password,
             ip: r.ip,
             model: r.model,
@@ -46,6 +47,7 @@ export class RoombaPlatform extends MatterbridgeDynamicPlatform {
       const mergedMap = new Map<string, {
         name: string
         blid: string
+        serialNumber?: string
         password: string
         ip: string
         model: string
@@ -64,6 +66,7 @@ export class RoombaPlatform extends MatterbridgeDynamicPlatform {
         mergedMap.set(dev.blid, {
           name: dev.name,
           blid: dev.blid,
+          serialNumber: dev.serialNumber ?? existing?.serialNumber,
           password: dev.robotpwd,
           ip: dev.ipaddress,
           model: existing?.model ?? 'Roomba',

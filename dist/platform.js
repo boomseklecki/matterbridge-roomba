@@ -19,6 +19,7 @@ export class RoombaPlatform extends MatterbridgeDynamicPlatform {
                     discovered = robots.map(r => ({
                         name: r.name,
                         blid: r.blid,
+                        serialNumber: r.info?.serialNum,
                         password: r.password,
                         ip: r.ip,
                         model: r.model,
@@ -40,6 +41,7 @@ export class RoombaPlatform extends MatterbridgeDynamicPlatform {
                 mergedMap.set(dev.blid, {
                     name: dev.name,
                     blid: dev.blid,
+                    serialNumber: dev.serialNumber ?? existing?.serialNumber,
                     password: dev.robotpwd,
                     ip: dev.ipaddress,
                     model: existing?.model ?? 'Roomba',
