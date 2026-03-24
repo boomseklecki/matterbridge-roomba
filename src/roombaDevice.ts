@@ -116,14 +116,24 @@ export class RoombaDevice {
     // RoboticVacuumCleaner constructor sets up BasicInformation and PowerSource clusters;
     // do not call createDefaultBridgedDeviceBasicInformationClusterServer or
     // createDefaultPowerSourceRechargeableBatteryClusterServer afterwards (would duplicate).
-    const supportedAreas = this.missions.map((m, i) => ({
-      areaId: i + 1,
-      mapId: null,
-      areaInfo: {
-        locationInfo: { locationName: m.name, floorNumber: null, areaType: null },
-        landmarkInfo: null,
+    const supportedAreas = [
+      {
+        areaId: 1,
+        mapId: null,
+        areaInfo: {
+          locationInfo: { locationName: 'Everywhere', floorNumber: null, areaType: null },
+          landmarkInfo: null,
+        },
       },
-    }))
+      ...this.missions.map((m, i) => ({
+        areaId: i + 2,
+        mapId: null,
+        areaInfo: {
+          locationInfo: { locationName: m.name, floorNumber: null, areaType: null },
+          landmarkInfo: null,
+        },
+      })),
+    ]
 
     this.endpoint = new RoboticVacuumCleaner(
       info.name,
@@ -146,11 +156,14 @@ export class RoombaDevice {
     this.setupCommandHandlers()
   }
 
+  // areaId 1 = "Everywhere" (full clean); missions start at areaId 2
+  private static readonly EVERYWHERE_AREA_ID = 1
+
   private selectedMissions(): NamedMission[] {
     const selected = this.endpoint.getAttribute('serviceArea', 'selectedAreas') as number[] | undefined
-    if (!selected || selected.length === 0) return []
+    if (!selected || selected.length === 0 || selected.includes(RoombaDevice.EVERYWHERE_AREA_ID)) return []
     return selected.flatMap(id => {
-      const m = this.missions[id - 1]
+      const m = this.missions[id - 2]
       return m ? [m] : []
     })
   }
