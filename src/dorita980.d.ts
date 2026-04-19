@@ -25,6 +25,9 @@ declare module 'dorita980' {
     sku?: string;
     softwareVer?: string;
     hardwareVer?: string;
+    bootloaderVer?: string;
+    mobilityVer?: string;
+    batteryType?: string;
     tankLvl?: number;
     lastCommand?: {
       command: string;

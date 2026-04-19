@@ -49,7 +49,9 @@ export function statusToOperationalState(status: RoombaStatus): number {
 /**
  * Map Roomba error code to a Matter ErrorState.
  */
-export function errorCodeToMatterError(errorCode: number): RvcOperationalState.ErrorState {
+export function errorCodeToMatterError(errorCode: number): RvcOperationalState.ErrorStateStruct {
+  // NOTE: `errorStateLabel`/`errorStateDetails` are only permitted for manufacturer-specific
+  // error IDs (>= 128) per the Matter spec. For standard RVC error IDs we omit them.
   if (errorCode === 0) {
     return { errorStateId: RvcOperationalState.ErrorState.NoError };
   }
@@ -57,48 +59,31 @@ export function errorCodeToMatterError(errorCode: number): RvcOperationalState.E
   switch (errorCode) {
     case 1: // Left wheel hanging
     case 2: // Right wheel hanging
+    case 3: // Left bump stuck
+    case 4: // Right bump stuck
     case 6: // Cliff sensor
     case 7: // Left wheel stall
     case 8: // Right wheel stall
-    case 13: // Uneven surface
-    case 17: // Navigation problem
-      return {
-        errorStateId: RvcOperationalState.ErrorState.Stuck,
-        errorStateLabel: `Movement error (code ${errorCode})`,
-      };
-
-    case 3: // Left bump stuck
-    case 4: // Right bump stuck
     case 9: // Bumper stuck
     case 10: // Side brush stall
     case 11: // Main brush stall
     case 12: // Side brush stall
-      return {
-        errorStateId: RvcOperationalState.ErrorState.Stuck,
-        errorStateLabel: `Brush/bumper error (code ${errorCode})`,
-      };
+    case 13: // Uneven surface
+    case 17: // Navigation problem
+      return { errorStateId: RvcOperationalState.ErrorState.Stuck };
 
     case 15: // Bin full
     case 16: // Bin not detected
-      return {
-        errorStateId: RvcOperationalState.ErrorState.DustBinFull,
-        errorStateLabel: errorCode === 15 ? 'Bin full' : 'Bin not detected',
-      };
+      return { errorStateId: RvcOperationalState.ErrorState.DustBinFull };
 
     case 14: // Battery too low
     case 19: // Undocking failed
-      return {
-        errorStateId: RvcOperationalState.ErrorState.LowBattery,
-        errorStateLabel: `Battery error (code ${errorCode})`,
-      };
+      return { errorStateId: RvcOperationalState.ErrorState.LowBattery };
 
     case 5: // Internal error
     case 18: // Hardware problem
     default:
-      return {
-        errorStateId: RvcOperationalState.ErrorState.UnableToCompleteOperation,
-        errorStateLabel: `Error code ${errorCode}`,
-      };
+      return { errorStateId: RvcOperationalState.ErrorState.UnableToCompleteOperation };
   }
 }
 

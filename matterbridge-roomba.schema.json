@@ -58,6 +58,43 @@
             "default": 120,
             "minimum": 30,
             "maximum": 3600
+          },
+          "vendor": {
+            "description": "Vendor name shown in Matter controllers (default: iRobot)",
+            "type": "string",
+            "default": "iRobot"
+          },
+          "model": {
+            "description": "Model name shown in Matter controllers (default: robot-reported SKU, e.g. 'j517020')",
+            "type": "string"
+          },
+          "rooms": {
+            "description": "Rooms/areas to expose as Matter service areas. Leave empty to hide the rooms selector.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "areaId": {
+                  "description": "Numeric area ID exposed via Matter (should match your robot's region IDs if you want selectAreas to work end-to-end)",
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "name": {
+                  "description": "Display name for the room",
+                  "type": "string"
+                },
+                "type": {
+                  "description": "Semantic room type (e.g. LivingRoom, Kitchen, Bedroom, Bathroom, Office)",
+                  "type": "string"
+                },
+                "floor": {
+                  "description": "Optional floor number",
+                  "type": "integer",
+                  "default": 0
+                }
+              },
+              "required": ["areaId", "name"]
+            }
           }
         },
         "required": ["blid", "password", "ipAddress"]

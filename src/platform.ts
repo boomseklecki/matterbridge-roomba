@@ -13,7 +13,6 @@ import { RoombaDevice } from './roombaDevice.js';
 
 interface RoombaPlatformConfig extends PlatformConfig {
   devices?: RoombaDeviceConfig[];
-  debug?: boolean;
 }
 
 export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
@@ -21,6 +20,8 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
   private readonly roombaDevices: Map<string, RoombaDevice> = new Map();
   private readonly platformConfig: RoombaPlatformConfig;
   private reconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private reconnectAttempts: Map<string, number> = new Map();
+  private shuttingDown = false;
 
   constructor(matterbridge: PlatformMatterbridge, log: AnsiLogger, config: PlatformConfig) {
     super(matterbridge, log, config);
@@ -52,9 +53,30 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     const connection = new RoombaConnection(deviceConfig, this.log);
     this.connections.set(blid, connection);
 
-    // Create the device and register with Matterbridge
-    const roombaDevice = new RoombaDevice(connection, this.log, blid);
+    // Create the device with room definitions from config (empty array suppresses defaults)
+    const roombaDevice = new RoombaDevice(connection, this.log, blid, deviceConfig.rooms);
     this.roombaDevices.set(blid, roombaDevice);
+
+    // Try to pre-populate device identity (vendor/model/firmware) from the robot itself.
+    // Falls back to config-provided values if the robot is unreachable or slow to respond —
+    // we don't want plugin startup to hang indefinitely on the network.
+    const vendorName = deviceConfig.vendor ?? 'iRobot';
+    const FALLBACK_INFO = {
+      name: deviceConfig.name ?? blid,
+      sku: deviceConfig.model ?? 'Roomba',
+      softwareVer: 'unknown',
+      hardwareVer: 'unknown',
+    };
+    try {
+      await withTimeout(connection.connect(), 15_000, 'connect timeout');
+      const info = await withTimeout(connection.fetchIdentity(), 8_000, 'identity fetch timeout');
+      roombaDevice.applyIdentity(info, vendorName, deviceConfig.model);
+    } catch (err) {
+      this.log.warn(
+        `Could not pre-fetch identity for ${blid} (${err}); using config fallbacks.`,
+      );
+      roombaDevice.applyIdentity(FALLBACK_INFO, vendorName, deviceConfig.model);
+    }
 
     await this.registerDevice(roombaDevice.device);
     this.log.info(`Registered Roomba device: ${connection.getDeviceName()}`);
@@ -69,12 +91,17 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
   override async onConfigure(): Promise<void> {
     this.log.info('Configuring Roomba devices...');
 
-    // Connect to all robots and initialize state
+    // Mark devices active so state can be pushed to Matter attributes.
+    // Connection may already have been established during onStart for identity pre-fetch;
+    // if so, we just reuse it. Otherwise, attempt to (re)connect.
     for (const [blid, connection] of this.connections) {
       try {
-        await connection.connect();
+        if (!connection.isConnected()) {
+          await connection.connect();
+        }
         const device = this.roombaDevices.get(blid);
         if (device) {
+          device.markActive();
           device.initializeState();
         }
         this.log.info(`Roomba ${blid} connected and configured`);
@@ -90,12 +117,14 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
 
   override async onShutdown(reason?: string): Promise<void> {
     this.log.info(`Shutting down Roomba plugin (reason: ${reason ?? 'unknown'})`);
+    this.shuttingDown = true;
 
     // Clear all reconnect timers
     for (const timer of this.reconnectTimers.values()) {
       clearTimeout(timer);
     }
     this.reconnectTimers.clear();
+    this.reconnectAttempts.clear();
 
     // Disconnect all robots
     for (const [blid, connection] of this.connections) {
@@ -107,11 +136,19 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
   }
 
   private scheduleReconnect(blid: string, config: RoombaDeviceConfig): void {
+    if (this.shuttingDown) return;
     // Don't schedule if already pending
     if (this.reconnectTimers.has(blid)) return;
 
+    // Exponential backoff: 30s, 60s, 120s, 240s, capped at 600s
+    const attempts = (this.reconnectAttempts.get(blid) ?? 0) + 1;
+    this.reconnectAttempts.set(blid, attempts);
+    const delayMs = Math.min(30_000 * 2 ** (attempts - 1), 600_000);
+    this.log.info(`Scheduling reconnect #${attempts} for Roomba ${blid} in ${Math.round(delayMs / 1000)}s`);
+
     const timer = setTimeout(async () => {
       this.reconnectTimers.delete(blid);
+      if (this.shuttingDown) return;
       this.log.info(`Attempting to reconnect to Roomba ${blid}...`);
 
       const connection = this.connections.get(blid);
@@ -122,14 +159,31 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
           if (device) {
             device.initializeState();
           }
+          this.reconnectAttempts.delete(blid);
           this.log.info(`Reconnected to Roomba ${blid}`);
         } catch (err) {
           this.log.warn(`Reconnect failed for ${blid}: ${err}`);
           this.scheduleReconnect(blid, config);
         }
       }
-    }, 30_000); // Retry every 30 seconds
+    }, delayMs);
 
     this.reconnectTimers.set(blid, timer);
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} after ${ms}ms`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }
