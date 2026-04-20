@@ -82,6 +82,25 @@ export interface RoombaDeviceConfig {
    * turn this off.
    */
   discoverRooms?: boolean;
+  /**
+   * Estimated minutes per room. Fallback signal for advancing
+   * `ServiceArea.currentArea` during a multi-room clean, used when the robot
+   * isn't reporting `cleanMissionStatus.sqft` (rare on j5+/j7/j9/i/s models).
+   * Default 10.
+   */
+  roomCleanDurationMinutes?: number;
+  /**
+   * Estimated square feet the robot cleans per room before the controller UI
+   * advances to the next selected room. This is the PRIMARY signal (pauses
+   * during recharge/stuck events, unlike wall-clock time). Default 75 sqft
+   * (about 7 m²). Tune down for studio-sized rooms, up for open-plan spaces.
+   */
+  roomCleanSqft?: number;
+  /**
+   * Dev-only: dump every raw MQTT state delta to the log. Use to discover robot
+   * state fields the plugin doesn't yet parse.
+   */
+  verboseState?: boolean;
 }
 
 export interface DiscoveredRegion {
@@ -117,6 +136,12 @@ export interface RoombaStatus {
   errorCode: number;
   cycle: string;
   name: string;
+  /** Cumulative square feet cleaned this mission (from cleanMissionStatus.sqft). */
+  missionSqft: number;
+  /** Mission elapsed minutes (from cleanMissionStatus.mssnM). */
+  missionElapsedMin: number;
+  /** Historical average mission length in minutes (from bbmssn.aMssnM). 0 if unknown. */
+  avgMissionMin: number;
 }
 
 export class RoombaConnection extends EventEmitter {
@@ -193,6 +218,7 @@ export class RoombaConnection extends EventEmitter {
 
         this.robot.on('state', (state: RobotState) => {
           this.mergeState(state);
+          if (this.config.verboseState) this.logStateDelta(state);
           this.emit('stateUpdate', this.getStatus());
         });
 
@@ -264,9 +290,33 @@ export class RoombaConnection extends EventEmitter {
   private mergeState(state: RobotState): void {
     Object.assign(this.latestState, state);
     this.captureDiscovery(state);
+    this.captureSkipCommand(state);
   }
 
   private lastSeenCommandTime: number | undefined;
+  /** Tracks the most recent skip command we emitted, so we don't re-emit on state heartbeats. */
+  private lastSkipCommandTime: number | undefined;
+
+  /**
+   * Detect when the user (or anyone) pressed the "skip room" button on the iRobot
+   * app. This is the ONE real-time per-region signal Roomba firmware exposes —
+   * `sqft`/`mssnM` stay at 0 on j5+/j7+ so time-based cycling is the only
+   * automatic fallback, but skips let us advance currentArea precisely when a
+   * human actually moves the robot past a room.
+   */
+  private captureSkipCommand(state: RobotState): void {
+    const lc = state.lastCommand;
+    if (!lc || lc.command !== 'skip') return;
+    if (!Array.isArray(lc.regions) || lc.regions.length === 0) return;
+    // lastCommand.time is a seconds-since-epoch timestamp of when the command ran.
+    // Use it to dedup across repeated state heartbeats that echo the same command.
+    if (lc.time === this.lastSkipCommandTime) return;
+    this.lastSkipCommandTime = lc.time;
+    this.emit(
+      'regionsSkipped',
+      lc.regions.map((r) => r.region_id),
+    );
+  }
 
   /**
    * If a `lastCommand` with regions has just arrived, merge its regions into the discovered
@@ -330,6 +380,57 @@ export class RoombaConnection extends EventEmitter {
     return Array.from(this.discoveredMaps.values());
   }
 
+  /** Signature of the last mission/command/pose/bbmssn slice we logged, for dedup. */
+  private lastVerboseSignatures: { mission?: string; lastCommand?: string; pose?: string; bbmssn?: string } = {};
+
+  /**
+   * Emit compact one-line log entries for the bits of robot state we care about,
+   * but ONLY when they've changed since the last log. Robot sends heartbeat state
+   * messages every ~2s; without this dedup the log gets spammed with identical lines.
+   */
+  private logStateDelta(state: RobotState): void {
+    if (state.cleanMissionStatus) {
+      const cms = state.cleanMissionStatus as typeof state.cleanMissionStatus & { sqft?: number };
+      const sig = `${cms.cycle}|${cms.phase}|${cms.mssnM}|${cms.sqft ?? ''}|${cms.error}|${cms.nMssn}|${cms.notReady}`;
+      if (sig !== this.lastVerboseSignatures.mission) {
+        this.lastVerboseSignatures.mission = sig;
+        this.log.info(
+          `[mission] cycle=${cms.cycle} phase=${cms.phase} mssnM=${cms.mssnM} ` +
+            `sqft=${cms.sqft ?? '-'} err=${cms.error} nMssn=${cms.nMssn} notReady=${cms.notReady}`,
+        );
+      }
+    }
+    const lc = state.lastCommand;
+    if (lc) {
+      const regionList = lc.regions?.map((r) => r.region_id).join(',') ?? '-';
+      const sig = `${lc.command}|${lc.initiator}|${lc.time}|${lc.pmap_id ?? ''}|${regionList}|${lc.ordered}`;
+      if (sig !== this.lastVerboseSignatures.lastCommand) {
+        this.lastVerboseSignatures.lastCommand = sig;
+        this.log.info(
+          `[lastCommand] command=${lc.command} initiator=${lc.initiator} time=${lc.time} ` +
+            `pmap_id=${lc.pmap_id ?? '-'} regions=[${regionList}] ordered=${lc.ordered}`,
+        );
+      }
+    }
+    const pose = (state as { pose?: { point?: { x: number; y: number }; theta?: number } }).pose;
+    if (pose?.point) {
+      // Round pose to integer so every millimetre of robot movement doesn't spam the log.
+      const sig = `${Math.round(pose.point.x)}|${Math.round(pose.point.y)}|${Math.round(pose.theta ?? 0)}`;
+      if (sig !== this.lastVerboseSignatures.pose) {
+        this.lastVerboseSignatures.pose = sig;
+        this.log.info(`[pose] x=${pose.point.x} y=${pose.point.y} theta=${pose.theta}`);
+      }
+    }
+    const bb = (state as { bbmssn?: { aMssnM?: number; nMssnC?: number } }).bbmssn;
+    if (bb?.aMssnM !== undefined) {
+      const sig = `${bb.aMssnM}|${bb.nMssnC}`;
+      if (sig !== this.lastVerboseSignatures.bbmssn) {
+        this.lastVerboseSignatures.bbmssn = sig;
+        this.log.info(`[bbmssn] aMssnM=${bb.aMssnM} nMssnC=${bb.nMssnC}`);
+      }
+    }
+  }
+
   getInfo(): RoombaInfo {
     const s = this.latestState;
     return {
@@ -365,6 +466,9 @@ export class RoombaConnection extends EventEmitter {
       errorCode,
       cycle,
       name: s.name ?? this.config.name ?? `Roomba ${this.config.blid}`,
+      missionSqft: s.cleanMissionStatus?.sqft ?? 0,
+      missionElapsedMin: s.cleanMissionStatus?.mssnM ?? 0,
+      avgMissionMin: s.bbmssn?.aMssnM ?? 0,
     };
   }
 

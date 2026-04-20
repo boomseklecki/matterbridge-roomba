@@ -134,8 +134,20 @@ export class RoombaDevice {
   private readonly rooms: RoombaRoomConfig[];
   private readonly pmapId: string | undefined;
   private readonly userPmapvId: string | undefined;
+  private readonly roomCleanDurationMs: number;
+  private readonly roomCleanSqft: number;
   /** Matter areaIds currently selected by the controller (from `selectAreas`). */
   private selectedAreas: number[] = [];
+  /** Wall-clock time the current multi-room mission started; fallback advance signal. */
+  private missionStartMs: number | undefined;
+  /** Sqft cleaned at mission start; used for sqft-delta based advance (primary signal). */
+  private missionStartSqft: number | undefined;
+  /**
+   * Highest selectedAreas index we've reached this mission. Skip commands advance
+   * us decisively (e.g. room 1 → room 2); the time-based fallback must never drag
+   * us back to a room we've already left. This ratchet enforces monotonic progress.
+   */
+  private missionMaxIndex = 0;
 
   constructor(
     private readonly connection: RoombaConnection,
@@ -145,11 +157,15 @@ export class RoombaDevice {
     serverMode: boolean,
     pmapId?: string,
     userPmapvId?: string,
+    roomCleanDurationMinutes?: number,
+    roomCleanSqft?: number,
   ) {
     this.serverMode = serverMode;
     this.rooms = rooms ?? [];
     this.pmapId = pmapId;
     this.userPmapvId = userPmapvId;
+    this.roomCleanDurationMs = Math.max(1, roomCleanDurationMinutes ?? 10) * 60_000;
+    this.roomCleanSqft = Math.max(1, roomCleanSqft ?? 75);
     this.deviceName = connection.getDeviceName();
     this.serialNumber = serialNumber;
 
@@ -459,15 +475,58 @@ export class RoombaDevice {
       `Starting room-targeted clean for ${regions.length} region(s): ` +
         `${regions.map((r) => r.region_id).join(', ')}`,
     );
-    // Tell the controller which area the robot is "currently" working on.
-    // Apple Home shows "Traveling to Room" / "Preparing" while currentArea is null;
-    // as soon as we set it to a selected area, the UI flips to "Cleaning <room>".
-    // Roomba's local MQTT state doesn't tell us which specific region is being
-    // cleaned at any moment, so we point at the first selected area throughout
-    // the mission — imprecise when multiple rooms are requested, but unblocks
-    // the controller display in the common single-room case.
+    // Snapshot the mission baseline. We cycle currentArea using sqft cleaned
+    // (preferred: pauses with the robot during recharge/stuck events) and fall
+    // back to wall-clock elapsed when sqft isn't increasing.
+    const startStatus = this.connection.getStatus();
+    this.missionStartMs = Date.now();
+    this.missionStartSqft = startStatus.missionSqft;
+    this.missionMaxIndex = 0;
     this.setCurrentArea(this.selectedAreas[0]);
     await this.connection.cleanRoom(this.pmapId, this.userPmapvId, regions);
+  }
+
+  /**
+   * While a multi-room mission is in progress, compute which area the robot is
+   * likely cleaning right now and update `currentArea`. Prefers `sqft` progress
+   * (Roomba's own cumulative-cleaned measure, pauses during recharge) over
+   * wall-clock elapsed time. Fallback kicks in for firmware that doesn't emit
+   * `sqft` or when sqft hasn't incremented yet.
+   */
+  private advanceCurrentAreaFromProgress(status: RoombaStatus): void {
+    if (this.selectedAreas.length <= 1) return;
+
+    const totalRooms = this.selectedAreas.length;
+    let indexRaw: number;
+    let signal: string;
+
+    const sqftDelta = Math.max(0, status.missionSqft - (this.missionStartSqft ?? 0));
+    if (sqftDelta > 0) {
+      // sqft-driven: advance every `roomCleanSqft` of cleaned area.
+      indexRaw = Math.floor(sqftDelta / this.roomCleanSqft);
+      signal = `sqft=${sqftDelta.toFixed(0)} (threshold ${this.roomCleanSqft}/room)`;
+    } else if (this.missionStartMs !== undefined) {
+      // Time-driven fallback.
+      const elapsedMs = Date.now() - this.missionStartMs;
+      indexRaw = Math.floor(elapsedMs / this.roomCleanDurationMs);
+      signal = `elapsed=${Math.round(elapsedMs / 60000)}min`;
+    } else {
+      return;
+    }
+
+    // Ratchet: never regress past the highest index we've reached this mission.
+    // Skip commands (handled separately) bump missionMaxIndex directly; the
+    // time-based estimate below it is just a safety net that catches up if no
+    // skip was issued.
+    const index = Math.min(Math.max(indexRaw, this.missionMaxIndex), totalRooms - 1);
+    if (index > this.missionMaxIndex) this.missionMaxIndex = index;
+    const targetArea = this.selectedAreas[index];
+    if (targetArea !== this.lastPushed.currentArea) {
+      this.log.info(
+        `Advancing currentArea to ${targetArea} (room ${index + 1}/${totalRooms}, ${signal})`,
+      );
+      this.setCurrentArea(targetArea);
+    }
   }
 
   /**
@@ -492,6 +551,42 @@ export class RoombaDevice {
     this.connection.on('stateUpdate', (status: RoombaStatus) => {
       this.updateMatterState(status);
     });
+    // User pressed "skip room" on the iRobot app — immediately advance currentArea
+    // past the skipped region if it matches one we're tracking. This is the most
+    // reliable real-time signal for per-region transitions; time-based cycling is
+    // only a fallback when no skip is observed.
+    this.connection.on('regionsSkipped', (skippedRegionIds: string[]) => {
+      this.handleRegionsSkipped(skippedRegionIds);
+    });
+  }
+
+  /**
+   * When the iRobot app fires a skip for a region, advance `currentArea` to the
+   * next selected area after the skipped one. If the skipped region isn't in
+   * `selectedAreas` at all, it was an iRobot-app-initiated clean outside of
+   * Matter's selection — leave state alone.
+   */
+  private handleRegionsSkipped(skippedRegionIds: string[]): void {
+    if (this.selectedAreas.length <= 1) return;
+    for (const regionId of skippedRegionIds) {
+      const room = this.rooms.find((r) => r.regionId === regionId);
+      if (!room) continue;
+      const skippedIdx = this.selectedAreas.indexOf(room.areaId);
+      if (skippedIdx === -1) continue;
+      // Advance to the next selected area after the skipped one (clamped).
+      const nextIdx = Math.min(skippedIdx + 1, this.selectedAreas.length - 1);
+      // Bump the mission-max ratchet BEFORE writing currentArea so the time-based
+      // advance on the same state-update cycle can't regress us back to the skipped
+      // room a millisecond later.
+      if (nextIdx > this.missionMaxIndex) this.missionMaxIndex = nextIdx;
+      const nextArea = this.selectedAreas[nextIdx];
+      if (nextArea !== this.lastPushed.currentArea) {
+        this.log.info(
+          `Region ${regionId} skipped; advancing currentArea to ${nextArea} (room ${nextIdx + 1}/${this.selectedAreas.length})`,
+        );
+        this.setCurrentArea(nextArea);
+      }
+    }
   }
 
   /**
@@ -586,6 +681,14 @@ export class RoombaDevice {
             this.log.debug(`Failed to clear selectedAreas: ${err}`);
           }
         }
+        this.missionStartMs = undefined;
+        this.missionStartSqft = undefined;
+      } else if (status.running && this.selectedAreas.length > 1) {
+        // During an active multi-room mission, advance `currentArea` on each state
+        // update so Apple Home's UI progresses from room to room instead of being
+        // stuck on the first one. Driven by the robot's cumulative sqft cleaned
+        // (or elapsed time when sqft isn't emitted).
+        this.advanceCurrentAreaFromProgress(status);
       }
       this.wasActive = isActive;
     } catch (err) {

@@ -111,6 +111,25 @@
             "type": "boolean",
             "default": false
           },
+          "roomCleanSqft": {
+            "description": "Estimated square feet Roomba cleans per room during a multi-room mission. Used to advance which room shows as 'currently cleaning' in your Matter controller as the robot works through selected rooms. This is the primary signal because Roomba reports cumulative cleaned sqft and it pauses naturally during recharge/stuck events. Default 75.",
+            "type": "number",
+            "default": 75,
+            "minimum": 1,
+            "maximum": 2000
+          },
+          "roomCleanDurationMinutes": {
+            "description": "Fallback estimated minutes per room, used only when Roomba doesn't emit sqft (rare on modern firmware). Default 10.",
+            "type": "number",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 120
+          },
+          "verboseState": {
+            "description": "Dev-only: log raw MQTT state deltas (cleanMissionStatus, lastCommand, pose, bbmssn). Enable if troubleshooting per-room progress or other state-related issues.",
+            "type": "boolean",
+            "default": false
+          },
           "pmapId": {
             "description": "Persistent map identifier (auto-discovered). Required for room-targeted cleans.",
             "type": "string"

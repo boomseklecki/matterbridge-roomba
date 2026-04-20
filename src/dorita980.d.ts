@@ -15,8 +15,23 @@ declare module 'dorita980' {
       error: number;
       notReady: number;
       mssnM: number;
+      /** Cumulative square feet cleaned in the current mission. Pauses when the robot recharges. */
+      sqft?: number;
+      /** Mission start time, Unix epoch seconds. */
+      mssnStrtTm?: number;
       initiator: string;
       nMssn: number;
+    };
+    /**
+     * Historical mission averages the robot keeps in flash. `aMssnM` is the user's
+     * home-specific average whole-home mission length in minutes. Useful for
+     * calibrating per-room progress estimates.
+     */
+    bbmssn?: {
+      aMssnM?: number;
+      nMssnC?: number;
+      nMssnF?: number;
+      nMssnOk?: number;
     };
     dock?: {
       known: boolean;

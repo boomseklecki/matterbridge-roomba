@@ -190,6 +190,8 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
       serverMode,
       deviceConfig.pmapId,
       deviceConfig.userPmapvId,
+      deviceConfig.roomCleanDurationMinutes,
+      deviceConfig.roomCleanSqft,
     );
     this.roombaDevices.set(blid, roombaDevice);
     this.log.info(
