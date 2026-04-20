@@ -1,6 +1,6 @@
 {
   "title": "Matterbridge Roomba Plugin",
-  "description": "matterbridge-roomba v.1.0.0 - iRobot Roomba vacuum cleaner plugin",
+  "description": "iRobot Roomba vacuum cleaners as standalone Matter devices",
   "type": "object",
   "properties": {
     "name": {
@@ -25,15 +25,15 @@
     },
     "testCloudLogin": {
       "title": "Test cloud login",
-      "description": "Click to verify the iRobot account credentials above and list the robots on the account. Results appear in the Matterbridge logs.",
-      "type": "string",
-      "ui:widget": "action"
+      "description": "Toggle on and Confirm to run a one-off iRobot cloud login test. Results appear in the Matterbridge logs. Toggle is auto-reset.",
+      "type": "boolean",
+      "default": false
     },
     "applyDiscoveredRooms": {
       "title": "Save discovered rooms to config",
-      "description": "After running discovery mode and cleaning each room from the iRobot app, click this to snapshot the captured regions into each device's rooms/pmapId/userPmapvId. Room names come out as 'Room <id>' — edit them afterwards in the Devices section.",
-      "type": "string",
-      "ui:widget": "action"
+      "description": "Toggle on and Confirm after running discovery mode (clean each room once from the iRobot app). Snapshots the captured regions into each device's rooms/pmapId/userPmapvId. Rename rooms afterwards in the Devices section. Toggle is auto-reset.",
+      "type": "boolean",
+      "default": false
     },
     "cloud": {
       "description": "Optional iRobot account credentials. When set, the plugin auto-fetches each robot's BLID and local MQTT password so you don't need to extract them manually. Only used at startup — stored credentials are not revalidated thereafter.",
@@ -41,13 +41,11 @@
       "properties": {
         "email": {
           "description": "iRobot account email address.",
-          "type": "string",
-          "format": "email"
+          "type": "string"
         },
         "password": {
           "description": "iRobot account password.",
-          "type": "string",
-          "format": "password"
+          "type": "string"
         },
         "countryCode": {
           "description": "Two-letter ISO country code for the iRobot cloud discovery endpoint (e.g. US, DE, JP). Defaults to US; Gigya federates so it usually doesn't matter.",
@@ -74,8 +72,7 @@
           },
           "password": {
             "description": "Robot's LOCAL MQTT password (not your iRobot account password). Auto-filled when cloud credentials are set.",
-            "type": "string",
-            "format": "password"
+            "type": "string"
           },
           "ipAddress": {
             "description": "Robot IP address on your local network. Must be supplied manually — cloud lookup does not return it.",

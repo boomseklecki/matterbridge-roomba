@@ -386,6 +386,21 @@ export class RoombaDevice {
     this.device.addCommandHandler('goHome', async () => {
       this.log.info('Go home requested');
       try {
+        // Some Roomba firmwares auto-resume a paused mission when the robot reaches
+        // the dock — it bounces off, completes, redocks, loops. Sending `stop()`
+        // first cancels the active/paused mission so the subsequent `dock()` results
+        // in a clean single-dock with no mission to resume.
+        const status = this.connection.getStatus();
+        if (status.running || status.paused) {
+          this.log.debug('goHome: mission active, stopping before dock');
+          try {
+            await this.connection.stop();
+          } catch (err) {
+            this.log.debug(`goHome: stop() returned ${err}; continuing to dock anyway`);
+          }
+          // Brief settle time so the robot processes the stop before we tell it to dock.
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
         await this.connection.dock();
       } catch (err) {
         this.log.warn(`Failed to dock: ${err}`);
@@ -399,9 +414,15 @@ export class RoombaDevice {
    */
   private async startCleaning(): Promise<void> {
     if (this.selectedAreas.length === 0) {
+      // Whole-home clean: clear any stale per-area state from a previous room mission.
+      this.log.info('Starting whole-home clean (no areas selected)');
+      this.setCurrentArea(null);
       await this.connection.clean();
       return;
     }
+    this.log.info(
+      `startCleaning: ${this.selectedAreas.length} area(s) selected: [${this.selectedAreas.join(', ')}]`,
+    );
 
     // Resolve Matter areaIds back to Roomba region metadata.
     const regions: Array<{ region_id: string; type: string }> = [];
@@ -420,6 +441,7 @@ export class RoombaDevice {
         `selectAreas referenced Matter areaId(s) [${unmappedAreas.join(', ')}] that have no regionId in config — ` +
           `falling back to whole-home clean. Run discovery mode to capture regionIds and add them to rooms[].`,
       );
+      this.setCurrentArea(null);
       await this.connection.clean();
       return;
     }
@@ -428,6 +450,7 @@ export class RoombaDevice {
         `selectAreas requested but no pmapId configured for ${this.deviceName} — falling back to whole-home clean. ` +
           `Add the discovered pmapId/userPmapvId to your device config.`,
       );
+      this.setCurrentArea(null);
       await this.connection.clean();
       return;
     }
@@ -436,7 +459,33 @@ export class RoombaDevice {
       `Starting room-targeted clean for ${regions.length} region(s): ` +
         `${regions.map((r) => r.region_id).join(', ')}`,
     );
+    // Tell the controller which area the robot is "currently" working on.
+    // Apple Home shows "Traveling to Room" / "Preparing" while currentArea is null;
+    // as soon as we set it to a selected area, the UI flips to "Cleaning <room>".
+    // Roomba's local MQTT state doesn't tell us which specific region is being
+    // cleaned at any moment, so we point at the first selected area throughout
+    // the mission — imprecise when multiple rooms are requested, but unblocks
+    // the controller display in the common single-room case.
+    this.setCurrentArea(this.selectedAreas[0]);
     await this.connection.cleanRoom(this.pmapId, this.userPmapvId, regions);
+  }
+
+  /**
+   * Write the ServiceArea.currentArea attribute. Guarded against errors because
+   * some controllers don't include the attribute on all feature sets.
+   */
+  private setCurrentArea(areaId: number | null): void {
+    if (!this.endpointActive) {
+      this.lastPushed.currentArea = areaId;
+      return;
+    }
+    if (areaId === this.lastPushed.currentArea) return;
+    try {
+      this.device.setAttribute('serviceArea', 'currentArea', areaId, this.log);
+      this.lastPushed.currentArea = areaId;
+    } catch (err) {
+      this.log.debug(`Failed to set currentArea=${areaId}: ${err}`);
+    }
   }
 
   private listenForStateUpdates(): void {
@@ -466,7 +515,10 @@ export class RoombaDevice {
     batteryPct?: number;
     batChargeLevel?: number;
     batChargeState?: number;
+    currentArea?: number | null;
   } = {};
+  /** Tracks whether the robot was running on the previous state update so we can detect the running→idle transition. */
+  private wasActive = false;
 
   /**
    * Push current Roomba state to the Matter device attributes, skipping writes whose
@@ -515,6 +567,27 @@ export class RoombaDevice {
         this.device.setAttribute('powerSource', 'batChargeState', chargeState, this.log);
         this.lastPushed.batChargeState = chargeState;
       }
+
+      // ServiceArea.currentArea / selectedAreas lifecycle. ONLY act on the
+      // running→idle transition, not on every poll while docked — otherwise we
+      // race against Apple Home's `selectAreas` (which arrives before `changeToMode`
+      // while the robot is still docked) and clear the selection out from under it,
+      // causing the mission to fall back to a whole-home clean.
+      const isActive = status.running || status.paused;
+      if (this.wasActive && !isActive) {
+        if (this.lastPushed.currentArea !== null) {
+          this.setCurrentArea(null);
+        }
+        if (this.selectedAreas.length > 0) {
+          this.selectedAreas = [];
+          try {
+            this.device.setAttribute('serviceArea', 'selectedAreas', [], this.log);
+          } catch (err) {
+            this.log.debug(`Failed to clear selectedAreas: ${err}`);
+          }
+        }
+      }
+      this.wasActive = isActive;
     } catch (err) {
       this.log.debug(`Error updating Matter state: ${err}`);
     }

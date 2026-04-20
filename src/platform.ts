@@ -40,6 +40,14 @@ interface RoombaPlatformConfig extends PlatformConfig {
    * Other device-level fields (ipAddress, rooms, pmapId, etc.) are left untouched.
    */
   cloud?: CloudCredentials;
+  /**
+   * Virtual boolean "buttons" — toggled on from the config UI, processed in
+   * onConfigChanged, then reset to false and re-saved so they behave like one-shot
+   * actions. We can't use rjsf action widgets because matterbridge's frontend uses
+   * vanilla react-jsonschema-form which doesn't ship that widget.
+   */
+  testCloudLogin?: boolean;
+  applyDiscoveredRooms?: boolean;
 }
 
 export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
@@ -310,25 +318,37 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
   }
 
   /**
-   * Frontend action buttons. Matterbridge invokes this when the user clicks a
-   * `"ui:widget": "action"` / `"actionText"` field in the plugin config UI.
+   * Invoked by matterbridge when the user clicks Confirm in the config UI.
+   * We use it to implement one-shot "action toggles": a boolean field in the
+   * schema, when flipped true, triggers an action here and is then reset to
+   * false and re-saved so it behaves like a push-button.
    */
-  override async onAction(action: string, value?: string, id?: string, formData?: PlatformConfig): Promise<void> {
-    this.log.info(`Action "${action}" received from frontend${value ? ` with value="${value}"` : ''}`);
-    switch (action) {
-      case 'testCloudLogin':
-        await this.runTestCloudLogin();
-        break;
-      case 'applyDiscoveredRooms':
-        await this.runApplyDiscoveredRooms();
-        break;
-      default:
-        this.log.warn(`Unknown action "${action}"`);
+  override async onConfigChanged(config: PlatformConfig): Promise<void> {
+    this.log.debug('Config changed; checking for pending one-shot actions…');
+    const next = config as RoombaPlatformConfig;
+    // Sync the in-memory config so subsequent operations see fresh values.
+    Object.assign(this.platformConfig, next);
+
+    let dirty = false;
+    if (next.testCloudLogin) {
+      await this.runTestCloudLogin();
+      next.testCloudLogin = false;
+      this.platformConfig.testCloudLogin = false;
+      dirty = true;
     }
-    // Silence the unused-arg lint; value/id/formData aren't needed for these actions.
-    void value;
-    void id;
-    void formData;
+    if (next.applyDiscoveredRooms) {
+      await this.runApplyDiscoveredRooms();
+      next.applyDiscoveredRooms = false;
+      this.platformConfig.applyDiscoveredRooms = false;
+      dirty = true;
+    }
+    if (dirty) {
+      try {
+        this.saveConfig(this.platformConfig);
+      } catch (err) {
+        this.log.warn(`Failed to re-save config after action: ${err}`);
+      }
+    }
   }
 
   /** Hit the cloud API with the configured credentials and log what we find. */
@@ -466,6 +486,12 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
           await connection.connect();
           const device = this.roombaDevices.get(blid);
           if (device) {
+            // markActive is idempotent. Call it here too because onConfigure's initial
+            // connect may have failed (robot offline during plugin restart), leaving
+            // endpointActive=false. Without this, every updateMatterState after a
+            // recovery reconnect is a silent no-op and Apple Home keeps showing the
+            // stale initial values.
+            device.markActive();
             device.initializeState();
           }
           this.reconnectAttempts.delete(blid);
