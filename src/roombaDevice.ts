@@ -130,13 +130,16 @@ export class RoombaDevice {
   private endpointActive = false;
   private readonly deviceName: string;
   private readonly serialNumber: string;
+  private readonly serverMode: boolean;
 
   constructor(
     private readonly connection: RoombaConnection,
     private readonly log: AnsiLogger,
     serialNumber: string,
     rooms: RoombaRoomConfig[] | undefined,
+    serverMode: boolean,
   ) {
+    this.serverMode = serverMode;
     this.deviceName = connection.getDeviceName();
     this.serialNumber = serialNumber;
 
@@ -146,10 +149,14 @@ export class RoombaDevice {
     // user chose.
     const currentArea = supportedAreas[0].areaId;
 
+    // 'server' = independent Matter server node with its own QR/passcode (recommended for
+    // RVC in Apple Home / Google Home). 'matter'/undefined = bridged under the aggregator.
+    const mode: 'server' | 'matter' | undefined = serverMode ? 'server' : undefined;
+
     this.device = new RoboticVacuumCleaner(
       this.deviceName,
       serialNumber,
-      undefined, // mode: let matterbridge decide (bridged under aggregator)
+      mode,
       RUN_MODE_IDLE,
       SUPPORTED_RUN_MODES,
       CLEAN_MODE_VACUUM,
@@ -175,23 +182,126 @@ export class RoombaDevice {
    */
   applyIdentity(info: RoombaInfo, vendorName: string, modelOverride?: string): void {
     const model = modelOverride || info.sku || 'Roomba';
+    const swNum = parseSoftwareVersion(info.softwareVer);
+    const hwNum = parseHardwareVersion(info.hardwareVer);
     try {
-      this.device.createDefaultBridgedDeviceBasicInformationClusterServer(
-        this.deviceName,
-        this.serialNumber,
-        0xfff1, // keep the Matterbridge test vendorId; Apple Home doesn't show it anyway
-        vendorName,
-        model,
-        parseSoftwareVersion(info.softwareVer),
-        info.softwareVer,
-        parseHardwareVersion(info.hardwareVer),
-        info.hardwareVer,
-      );
-      this.log.debug(
+      if (this.serverMode) {
+        // Server mode: the device IS its own Matter server, so the controller reads
+        // BasicInformation from this endpoint (not BridgedDeviceBasicInformation).
+        // Matterbridge also requires productId to be set for server-mode endpoints —
+        // `createDefaultBridgedDeviceBasicInformationClusterServer` clears it, so we
+        // must NOT call that helper in server mode.
+        this.device.createDefaultBasicInformationClusterServer(
+          this.deviceName,
+          this.serialNumber,
+          0xfff1,
+          vendorName,
+          0x8000,
+          model,
+          swNum,
+          info.softwareVer,
+          hwNum,
+          info.hardwareVer,
+        );
+      } else {
+        // Bridged mode: the controller reads BridgedDeviceBasicInformation from the
+        // bridged endpoint. Call both so older controllers that read BasicInformation
+        // get the right vendor/model too.
+        this.device.createDefaultBasicInformationClusterServer(
+          this.deviceName,
+          this.serialNumber,
+          0xfff1,
+          vendorName,
+          0x8000,
+          model,
+          swNum,
+          info.softwareVer,
+          hwNum,
+          info.hardwareVer,
+        );
+        this.device.createDefaultBridgedDeviceBasicInformationClusterServer(
+          this.deviceName,
+          this.serialNumber,
+          0xfff1,
+          vendorName,
+          model,
+          swNum,
+          info.softwareVer,
+          hwNum,
+          info.hardwareVer,
+        );
+      }
+      this.log.info(
         `Applied identity to ${this.deviceName}: vendor=${vendorName} model=${model} sw=${info.softwareVer} hw=${info.hardwareVer}`,
       );
+      this.log.debug(
+        `  Endpoint fields now: vendorName="${this.device.vendorName}" productName="${this.device.productName}" productId=${this.device.productId} softwareVersionString="${this.device.softwareVersionString}" uniqueId="${this.device.uniqueId}" mode=${this.serverMode ? 'server' : 'bridged'}`,
+      );
+      // Stash the values we want on the root node — they'll be pushed via
+      // overrideRootNodeIdentity() AFTER matterbridge creates the server node, since
+      // matterbridge's createServerNodeContext hardcodes softwareVersion to its OWN
+      // version (e.g. 3.7.4) regardless of what we set on the endpoint.
+      this.pendingRootOverride = {
+        vendorName,
+        productName: model,
+        softwareVersion: swNum,
+        softwareVersionString: info.softwareVer,
+        hardwareVersion: hwNum,
+        hardwareVersionString: info.hardwareVer,
+      };
     } catch (err) {
       this.log.warn(`Failed to apply device identity: ${err}`);
+    }
+  }
+
+  private pendingRootOverride?: {
+    vendorName: string;
+    productName: string;
+    softwareVersion: number;
+    softwareVersionString: string;
+    hardwareVersion: number;
+    hardwareVersionString: string;
+  };
+
+  /**
+   * In server mode each device has its own Matter server node (root endpoint 0).
+   * Matterbridge unconditionally stamps its own `softwareVersion`/`hardwareVersion`
+   * into that root node's BasicInformation when creating the server, so users see
+   * "Matterbridge 3.7.4" instead of the robot's firmware. We work around this by
+   * writing the correct values back to the root node AFTER registration.
+   *
+   * These attributes are declared Fixed in the Matter spec, meaning a REMOTE
+   * controller cannot write them — but the server itself can populate them at any
+   * time before clients subscribe. matter.js's internal `set()` API respects that.
+   */
+  async overrideRootNodeIdentity(): Promise<void> {
+    if (!this.serverMode || !this.pendingRootOverride) return;
+    // `serverNode` is attached by matterbridge in createDeviceServerNode — it's a
+    // matter.js ServerNode whose endpoint-0 `basicInformation` we need to patch.
+    const serverNode = (this.device as unknown as { serverNode?: { set: (state: unknown) => Promise<void> } }).serverNode;
+    if (!serverNode || typeof serverNode.set !== 'function') {
+      this.log.debug(`Server node not available yet for ${this.deviceName} — skipping root identity override`);
+      return;
+    }
+    try {
+      await serverNode.set({
+        basicInformation: {
+          vendorName: this.pendingRootOverride.vendorName.slice(0, 32),
+          productName: this.pendingRootOverride.productName.slice(0, 32),
+          softwareVersion: this.pendingRootOverride.softwareVersion,
+          softwareVersionString: this.pendingRootOverride.softwareVersionString.slice(0, 64),
+          hardwareVersion: this.pendingRootOverride.hardwareVersion,
+          hardwareVersionString: this.pendingRootOverride.hardwareVersionString.slice(0, 64),
+        },
+      });
+      this.log.info(
+        `Root node identity overridden for ${this.deviceName}: ` +
+          `vendorName=${this.pendingRootOverride.vendorName} ` +
+          `productName=${this.pendingRootOverride.productName} ` +
+          `softwareVersionString=${this.pendingRootOverride.softwareVersionString}`,
+      );
+    } catch (err) {
+      this.log.warn(`Failed to override root node identity for ${this.deviceName}: ${err}`);
     }
   }
 

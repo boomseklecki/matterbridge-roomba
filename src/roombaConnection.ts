@@ -34,8 +34,41 @@ export interface RoombaDeviceConfig {
   model?: string;
   /** Vendor name override (default "iRobot"). */
   vendor?: string;
+  /**
+   * Expose the robot as its OWN independent Matter server node (own QR code, own pairing)
+   * instead of a bridged endpoint under the Matterbridge aggregator.
+   *
+   * Default: `true`. Recommended for Apple Home and Google Home — both controllers
+   * handle standalone RVC devices better than bridged ones (bridged mode causes metadata
+   * to appear as "Matterbridge/Aggregator" and creates a ghost "unsupported device" in
+   * single-device bridges).
+   *
+   * Set to `false` if you prefer a single pairing code for all Matterbridge plugins;
+   * be aware that Apple Home may display the vacuum metadata incorrectly in that mode.
+   */
+  serverMode?: boolean;
   /** Optional list of rooms to expose as Matter service areas. */
   rooms?: RoombaRoomConfig[];
+  /**
+   * When true, every time the robot reports a room-based clean command, the plugin
+   * logs a copy-paste-ready JSON snippet with the captured region IDs. Turn on,
+   * clean each room once from the iRobot app, copy the snippet into `rooms`,
+   * turn this off.
+   */
+  discoverRooms?: boolean;
+}
+
+export interface DiscoveredRegion {
+  regionId: string;
+  type: string;
+  /** First time we saw this region (ms since epoch). */
+  firstSeen: number;
+}
+
+export interface DiscoveredMap {
+  pmapId: string;
+  userPmapvId?: string;
+  regions: DiscoveredRegion[];
 }
 
 export interface RoombaInfo {
@@ -70,6 +103,8 @@ export class RoombaConnection extends EventEmitter {
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private readonly activeRefreshMs: number;
   private readonly idleRefreshMs: number;
+  /** Accumulated map of pmap_id -> discovered rooms, populated while `discoverRooms` is on. */
+  private readonly discoveredMaps = new Map<string, DiscoveredMap>();
 
   constructor(
     private readonly config: RoombaDeviceConfig,
@@ -202,6 +237,71 @@ export class RoombaConnection extends EventEmitter {
 
   private mergeState(state: RobotState): void {
     Object.assign(this.latestState, state);
+    this.captureDiscovery(state);
+  }
+
+  private lastSeenCommandTime: number | undefined;
+
+  /**
+   * If a `lastCommand` with regions has just arrived, merge its regions into the discovered
+   * map set and emit a `roomsDiscovered` event with the accumulated catalog.
+   * Also emits a per-mission `roomsInMission` event describing what was in the command
+   * we just observed — handy for correlating region IDs with the room you pressed
+   * "Clean" on in the iRobot app.
+   */
+  private captureDiscovery(state: RobotState): void {
+    const lc = state.lastCommand;
+    if (!lc || !lc.pmap_id || !Array.isArray(lc.regions) || lc.regions.length === 0) return;
+
+    // Only fire once per distinct mission (lastCommand.time is the mission timestamp).
+    if (lc.time && lc.time === this.lastSeenCommandTime) return;
+    this.lastSeenCommandTime = lc.time;
+
+    const existing = this.discoveredMaps.get(lc.pmap_id) ?? {
+      pmapId: lc.pmap_id,
+      userPmapvId: lc.user_pmapv_id,
+      regions: [],
+    };
+    if (lc.user_pmapv_id) existing.userPmapvId = lc.user_pmapv_id;
+
+    const newRegionIds: string[] = [];
+    for (const region of lc.regions) {
+      if (!region || !region.region_id) continue;
+      if (existing.regions.some((r) => r.regionId === region.region_id)) continue;
+      existing.regions.push({
+        regionId: region.region_id,
+        type: region.type ?? 'rid',
+        firstSeen: Date.now(),
+      });
+      newRegionIds.push(region.region_id);
+    }
+    this.discoveredMaps.set(lc.pmap_id, existing);
+
+    // Per-mission event: tell listeners what was in THIS command (regardless of
+    // whether it's new or a repeat). This is what makes "clean one room, see its id"
+    // work as an identification strategy.
+    this.emit('roomsInMission', {
+      pmapId: lc.pmap_id,
+      userPmapvId: lc.user_pmapv_id,
+      command: lc.command,
+      selectAll: lc.select_all ?? false,
+      regions: lc.regions.map((r) => ({
+        regionId: r.region_id,
+        type: r.type ?? 'rid',
+        params: r.params,
+      })),
+      newRegionIds,
+      time: lc.time,
+    });
+
+    if (newRegionIds.length > 0) {
+      this.emit('roomsDiscovered', Array.from(this.discoveredMaps.values()));
+    }
+  }
+
+  /** Returns the current discovery catalog (may be empty). */
+  getDiscoveredMaps(): DiscoveredMap[] {
+    return Array.from(this.discoveredMaps.values());
   }
 
   getInfo(): RoombaInfo {

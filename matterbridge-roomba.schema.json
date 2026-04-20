@@ -59,6 +59,11 @@
             "minimum": 30,
             "maximum": 3600
           },
+          "serverMode": {
+            "description": "Expose this robot as its own independent Matter device (separate QR code and pairing) instead of a bridged endpoint. Recommended for Apple Home and Google Home — they handle standalone vacuums better than bridged ones. Turn off only if you prefer a single pairing code for all Matterbridge plugins.",
+            "type": "boolean",
+            "default": true
+          },
           "vendor": {
             "description": "Vendor name shown in Matter controllers (default: iRobot)",
             "type": "string",
@@ -67,6 +72,11 @@
           "model": {
             "description": "Model name shown in Matter controllers (default: robot-reported SKU, e.g. 'j517020')",
             "type": "string"
+          },
+          "discoverRooms": {
+            "description": "When true, the plugin logs a copy-paste-ready 'rooms' snippet whenever a room-based clean command is observed. See ONBOARDING.md for the step-by-step flow. Turn off after you have filled in 'rooms'.",
+            "type": "boolean",
+            "default": false
           },
           "rooms": {
             "description": "Rooms/areas to expose as Matter service areas. Leave empty to hide the rooms selector.",

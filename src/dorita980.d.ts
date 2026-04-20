@@ -35,9 +35,11 @@ declare module 'dorita980' {
       time: number;
       ordered: number;
       pmap_id?: string;
+      user_pmapv_id?: string;
       regions?: Array<{
         region_id: string;
         type: string;
+        params?: Record<string, unknown>;
       }>;
       select_all?: boolean;
     };

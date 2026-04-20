@@ -8,7 +8,17 @@ import {
   type PlatformMatterbridge,
 } from 'matterbridge';
 import type { AnsiLogger } from 'matterbridge/logger';
-import { RoombaConnection, type RoombaDeviceConfig } from './roombaConnection.js';
+import { RoombaConnection, type DiscoveredMap, type RoombaDeviceConfig } from './roombaConnection.js';
+
+interface RoomsInMissionPayload {
+  pmapId: string;
+  userPmapvId?: string;
+  command?: string;
+  selectAll: boolean;
+  regions: Array<{ regionId: string; type: string; params?: Record<string, unknown> }>;
+  newRegionIds: string[];
+  time?: number;
+}
 import { RoombaDevice } from './roombaDevice.js';
 
 interface RoombaPlatformConfig extends PlatformConfig {
@@ -53,9 +63,15 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     const connection = new RoombaConnection(deviceConfig, this.log);
     this.connections.set(blid, connection);
 
-    // Create the device with room definitions from config (empty array suppresses defaults)
-    const roombaDevice = new RoombaDevice(connection, this.log, blid, deviceConfig.rooms);
+    // Create the device with room definitions from config (empty array suppresses defaults).
+    // Default to server mode ('server') — Apple Home / Google Home handle standalone RVC
+    // better than bridged RVC. Users can set serverMode:false to fold it into the bridge.
+    const serverMode = deviceConfig.serverMode ?? true;
+    const roombaDevice = new RoombaDevice(connection, this.log, blid, deviceConfig.rooms, serverMode);
     this.roombaDevices.set(blid, roombaDevice);
+    this.log.info(
+      `[${deviceConfig.name ?? blid}] Exposing robot in ${serverMode ? 'server (standalone Matter device)' : 'bridged (under Matterbridge aggregator)'} mode`,
+    );
 
     // Try to pre-populate device identity (vendor/model/firmware) from the robot itself.
     // Falls back to config-provided values if the robot is unreachable or slow to respond —
@@ -81,11 +97,70 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     await this.registerDevice(roombaDevice.device);
     this.log.info(`Registered Roomba device: ${connection.getDeviceName()}`);
 
+    // In server mode, matterbridge stamped its own version onto the root node. Overwrite
+    // with the robot's real firmware now that the server is up.
+    await roombaDevice.overrideRootNodeIdentity();
+
     // Set up reconnection handler
     connection.on('disconnected', () => {
       this.log.warn(`Roomba ${blid} disconnected, will attempt reconnection...`);
       this.scheduleReconnect(blid, deviceConfig);
     });
+
+    // Discovery mode: log copy-paste-ready rooms config whenever a new region is seen.
+    if (deviceConfig.discoverRooms) {
+      const label = deviceConfig.name ?? blid;
+      this.log.info(
+        `[${label}] Room discovery mode is ON. ` +
+          `Clean rooms ONE AT A TIME from the iRobot app — each mission will be logged ` +
+          `with its region id and timestamp so you can tell which room is which.`,
+      );
+      connection.on('roomsInMission', (mission: RoomsInMissionPayload) => {
+        this.logMission(label, mission);
+      });
+      connection.on('roomsDiscovered', (maps: DiscoveredMap[]) => {
+        this.logDiscoveredRooms(label, maps);
+      });
+    }
+  }
+
+  /** Log a single mission as it arrives so users can correlate id -> physical room. */
+  private logMission(deviceLabel: string, mission: RoomsInMissionPayload): void {
+    const ids = mission.regions.map((r) => `${r.regionId}${r.type !== 'rid' ? `(${r.type})` : ''}`).join(', ');
+    const newSuffix = mission.newRegionIds.length > 0 ? ` (NEW: ${mission.newRegionIds.join(', ')})` : '';
+    const ts = mission.time ? new Date(mission.time * 1000).toLocaleTimeString() : 'unknown';
+    this.log.info(
+      `[${deviceLabel}] Mission "${mission.command ?? 'start'}" at ${ts}: ` +
+        `${mission.selectAll ? 'whole home' : `regions=[${ids}]`}${newSuffix}. ` +
+        `(If you just cleaned a single room in the iRobot app, region ${ids} = that room.)`,
+    );
+  }
+
+  /**
+   * Pretty-print the accumulated room discoveries in a form the user can drop straight
+   * into the plugin config under `rooms`. Named regions keep type `rid`; everything else
+   * is labelled a placeholder so the user knows to rename it.
+   */
+  private logDiscoveredRooms(deviceLabel: string, maps: DiscoveredMap[]): void {
+    for (const map of maps) {
+      const lines: string[] = [];
+      lines.push(`[${deviceLabel}] Discovered ${map.regions.length} room(s) on map ${map.pmapId}:`);
+      lines.push(`  "rooms": [`);
+      map.regions.forEach((region, i) => {
+        const comma = i === map.regions.length - 1 ? '' : ',';
+        // Roomba region IDs are strings — usually "1", "2", etc. but not guaranteed.
+        // Matter's areaId is uint32, so numeric-parse when possible, else hash.
+        const areaId = toAreaId(region.regionId);
+        lines.push(
+          `    { "areaId": ${areaId}, "name": "Room ${region.regionId} (rename me)", "type": null }${comma}`,
+        );
+      });
+      lines.push(`  ]`);
+      lines.push(
+        `  pmapId=${map.pmapId}${map.userPmapvId ? ` userPmapvId=${map.userPmapvId}` : ''}`,
+      );
+      this.log.info(lines.join('\n'));
+    }
   }
 
   override async onConfigure(): Promise<void> {
@@ -170,6 +245,25 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
 
     this.reconnectTimers.set(blid, timer);
   }
+}
+
+/**
+ * Convert a Roomba `region_id` string to a stable Matter `areaId` (uint32).
+ * - Numeric strings ("1", "2", …) → parsed as-is so the number stays recognisable.
+ * - Anything else → FNV-1a hash clamped to 31 bits to stay safely within uint32.
+ */
+function toAreaId(regionId: string): number {
+  const asNumber = Number(regionId);
+  if (Number.isInteger(asNumber) && asNumber >= 0 && asNumber <= 0x7fffffff) {
+    return asNumber;
+  }
+  // FNV-1a 32-bit for non-numeric region ids (some older pmaps use UUIDs)
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < regionId.length; i++) {
+    hash ^= regionId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash & 0x7fffffff || 1;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
