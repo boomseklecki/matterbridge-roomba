@@ -48,7 +48,15 @@ const SUPPORTED_RUN_MODES: RvcRunMode.ModeOption[] = [
  * SupportedModes list). DeepClean is added across all vacuum-capable families
  * because `carpetBoost` is available on any Roomba with floor-type detection.
  */
-function buildSupportedCleanModes(family: RoombaFamily): RvcCleanMode.ModeOption[] {
+interface CleanModeCapabilities {
+  multiPass: boolean;
+  carpetBoost: boolean;
+}
+
+function buildSupportedCleanModes(
+  family: RoombaFamily,
+  caps: CleanModeCapabilities,
+): RvcCleanMode.ModeOption[] {
   const modes: RvcCleanMode.ModeOption[] = [];
   const addVacuum = family !== 'mop';
   const addMop = family === 'mop' || family === 'swappable' || family === 'combo';
@@ -63,35 +71,42 @@ function buildSupportedCleanModes(family: RoombaFamily): RvcCleanMode.ModeOption
         { value: RvcCleanMode.ModeTag.Auto },
       ],
     });
-    // Quick: one-pass + eco suction. Faster, quieter, lighter — useful for
-    // touch-ups or night-time runs.
-    modes.push({
-      label: 'Quick',
-      mode: CLEAN_MODE_QUICK,
-      modeTags: [
-        { value: RvcCleanMode.ModeTag.Vacuum },
-        { value: RvcCleanMode.ModeTag.Quick },
-        { value: RvcCleanMode.ModeTag.LowEnergy },
-      ],
-    });
-    // Max: performance boost + auto passes. Full suction on whatever surface.
-    modes.push({
-      label: 'Max Power',
-      mode: CLEAN_MODE_MAX,
-      modeTags: [
-        { value: RvcCleanMode.ModeTag.Vacuum },
-        { value: RvcCleanMode.ModeTag.Max },
-      ],
-    });
-    // Deep Clean: performance + two passes. Most thorough.
-    modes.push({
-      label: 'Deep Clean',
-      mode: CLEAN_MODE_DEEP_CLEAN,
-      modeTags: [
-        { value: RvcCleanMode.ModeTag.Vacuum },
-        { value: RvcCleanMode.ModeTag.DeepClean },
-      ],
-    });
+    // Quick (single pass) — gated on the robot supporting pass selection. A
+    // 600-series without multi-pass would silently ignore the preference write,
+    // so we just don't offer the mode.
+    if (caps.multiPass) {
+      modes.push({
+        label: 'Quick',
+        mode: CLEAN_MODE_QUICK,
+        modeTags: [
+          { value: RvcCleanMode.ModeTag.Vacuum },
+          { value: RvcCleanMode.ModeTag.Quick },
+          { value: RvcCleanMode.ModeTag.LowEnergy },
+        ],
+      });
+    }
+    // Max Power (performance boost) — gated on carpet boost support.
+    if (caps.carpetBoost) {
+      modes.push({
+        label: 'Max Power',
+        mode: CLEAN_MODE_MAX,
+        modeTags: [
+          { value: RvcCleanMode.ModeTag.Vacuum },
+          { value: RvcCleanMode.ModeTag.Max },
+        ],
+      });
+    }
+    // Deep Clean (two-pass + carpet boost) — needs BOTH caps.
+    if (caps.multiPass && caps.carpetBoost) {
+      modes.push({
+        label: 'Deep Clean',
+        mode: CLEAN_MODE_DEEP_CLEAN,
+        modeTags: [
+          { value: RvcCleanMode.ModeTag.Vacuum },
+          { value: RvcCleanMode.ModeTag.DeepClean },
+        ],
+      });
+    }
   }
   if (addMop) {
     modes.push({
@@ -181,6 +196,7 @@ export class RoombaDevice {
     roomCleanSqft?: number,
     family: RoombaFamily = 'unknown',
     maps: RoombaMapConfig[] | undefined = undefined,
+    cleanCapabilities: CleanModeCapabilities = { multiPass: false, carpetBoost: false },
   ) {
     this.serverMode = serverMode;
     this.rooms = rooms ?? [];
@@ -190,7 +206,7 @@ export class RoombaDevice {
     this.roomCleanDurationMs = Math.max(1, roomCleanDurationMinutes ?? 10) * 60_000;
     this.roomCleanSqft = Math.max(1, roomCleanSqft ?? 75);
     this.family = family;
-    const supportedCleanModes = buildSupportedCleanModes(family);
+    const supportedCleanModes = buildSupportedCleanModes(family, cleanCapabilities);
     // Prefer a Vacuum-tagged mode as the initial current value — matches what
     // every Roomba ships with when the bin is installed. For mop-only robots
     // fall back to the first (Mop) entry.

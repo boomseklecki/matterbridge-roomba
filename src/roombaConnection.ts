@@ -153,6 +153,24 @@ export interface RoombaInfo {
   sku: string;
   softwareVer: string;
   hardwareVer: string;
+  /**
+   * Capability flags the robot broadcasts over MQTT. We read a handful of fields
+   * to decide which Matter clean modes to advertise — older models (i3+/i4+,
+   * 600/700 series) don't support multi-pass or carpet boost, so offering
+   * Quick/DeepClean on those is just lying to the controller.
+   *
+   * Field semantics, reverse-engineered across dorita980 / NickWaterton /
+   * iRobot community threads:
+   *   - multiPass: 0 = unsupported, >=1 = supports single/two-pass selection
+   *   - carpetBoost: 0 = unsupported, >=1 = supports Eco/Auto/Performance
+   *   - pp (power pass): Roomba's internal boost-on-carpet-auto toggle
+   *   - eco: supports eco cleaning profile
+   *   - edge: supports edge-clean toggle
+   */
+  capabilities: {
+    multiPass: boolean;
+    carpetBoost: boolean;
+  };
 }
 
 /**
@@ -522,11 +540,28 @@ export class RoombaConnection extends EventEmitter {
 
   getInfo(): RoombaInfo {
     const s = this.latestState;
+    const cap = (s as { cap?: Record<string, unknown> }).cap ?? {};
+    const asNum = (v: unknown): number => (typeof v === 'number' ? v : 0);
     return {
       name: s.name ?? this.config.name ?? `Roomba ${this.config.blid}`,
       sku: (s.sku as string | undefined) ?? this.config.model ?? 'Roomba',
       softwareVer: (s.softwareVer as string | undefined) ?? 'unknown',
       hardwareVer: (s.hardwareVer as string | undefined) ?? 'unknown',
+      capabilities: {
+        multiPass: asNum(cap.multiPass) >= 1,
+        // Carpet-boost / power-pass indicator varies across firmware generations:
+        //   - 980 / i7 era exposed `cap.carpetBoost` explicitly.
+        //   - 980 also uses `cap.pp` (power-pass) for the same thing.
+        //   - j-series drops the explicit flag but publishes
+        //     `cap.floorTypeDetect` (the sensor that drives auto-boost), which
+        //     any robot with carpet-boost support also has.
+        // Accept any of the three so we don't under-report Max/DeepClean on
+        // newer models that implicitly support them.
+        carpetBoost:
+          asNum(cap.carpetBoost) >= 1 ||
+          asNum(cap.pp) >= 1 ||
+          asNum(cap.floorTypeDetect) >= 1,
+      },
     };
   }
 

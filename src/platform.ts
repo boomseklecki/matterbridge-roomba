@@ -187,16 +187,21 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
       sku: deviceConfig.model ?? 'Roomba',
       softwareVer: 'unknown',
       hardwareVer: 'unknown',
+      capabilities: { multiPass: false, carpetBoost: false },
     };
     let family: 'vacuum' | 'swappable' | 'combo' | 'mop' | 'unknown' = 'unknown';
+    let cleanCapabilities = { multiPass: false, carpetBoost: false };
+    // Start with the fallback shape; overwritten after identity fetch succeeds.
     let identityInfo: typeof FALLBACK_INFO = FALLBACK_INFO;
     let identityApplied = false;
     try {
       await withTimeout(connection.connect(), 15_000, 'connect timeout');
       identityInfo = await withTimeout(connection.fetchIdentity(), 8_000, 'identity fetch timeout');
       family = connection.classifyFamily();
+      cleanCapabilities = identityInfo.capabilities;
       this.log.info(
-        `[${deviceConfig.name ?? blid}] Classified as family "${family}" (sku=${identityInfo.sku})`,
+        `[${deviceConfig.name ?? blid}] Classified as family "${family}" (sku=${identityInfo.sku}) ` +
+          `capabilities: multiPass=${cleanCapabilities.multiPass} carpetBoost=${cleanCapabilities.carpetBoost}`,
       );
     } catch (err) {
       this.log.warn(
@@ -220,6 +225,7 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
       deviceConfig.roomCleanSqft,
       family,
       deviceConfig.maps,
+      cleanCapabilities,
     );
     this.roombaDevices.set(blid, roombaDevice);
     this.log.info(
