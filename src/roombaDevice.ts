@@ -7,11 +7,15 @@ import { RoboticVacuumCleaner } from 'matterbridge/devices';
 import { RvcRunMode, RvcCleanMode, RvcOperationalState, ServiceArea } from 'matterbridge/matter/clusters';
 import type { AnsiLogger } from 'matterbridge/logger';
 import type { RoombaConnection, RoombaInfo, RoombaStatus, RoombaRoomConfig } from './roombaConnection.js';
+import type { RoombaFamily } from './roombaConnection.js';
 import {
   RUN_MODE_IDLE,
   RUN_MODE_CLEANING,
   RUN_MODE_MAPPING,
   CLEAN_MODE_VACUUM,
+  CLEAN_MODE_MOP,
+  CLEAN_MODE_VACUUM_THEN_MOP,
+  CLEAN_MODE_DEEP_CLEAN,
   statusToRunMode,
   statusToOperationalState,
   errorCodeToMatterError,
@@ -27,10 +31,74 @@ const SUPPORTED_RUN_MODES: RvcRunMode.ModeOption[] = [
   { label: 'Mapping', mode: RUN_MODE_MAPPING, modeTags: [{ value: RvcRunMode.ModeTag.Mapping }] },
 ];
 
-// Clean modes: Roomba is vacuum-only (no mop)
-const SUPPORTED_CLEAN_MODES: RvcCleanMode.ModeOption[] = [
-  { label: 'Vacuum', mode: CLEAN_MODE_VACUUM, modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }] },
-];
+/**
+ * Build the `SupportedModes` list for RvcCleanMode based on the robot's family
+ * classification. A Matter-spec-compliant implementation:
+ *   - vacuum-only robots: [Vacuum]
+ *   - mop-only robots (Braava m-series): [Mop]
+ *   - swappable (j5/j6 with sold-separately mop reservoir): [Vacuum, Mop]
+ *     Runtime gating rejects the mode that doesn't match the installed tool.
+ *   - combo (j7/j9 Combo, auto-switching): [Vacuum, Mop, VacuumThenMop]
+ *     Also expose DeepClean which maps to Roomba's two-pass carpet mode.
+ *
+ * We always include at least one entry (Matter conformance requires a non-empty
+ * SupportedModes list). DeepClean is added across all vacuum-capable families
+ * because `carpetBoost` is available on any Roomba with floor-type detection.
+ */
+function buildSupportedCleanModes(family: RoombaFamily): RvcCleanMode.ModeOption[] {
+  const modes: RvcCleanMode.ModeOption[] = [];
+  const addVacuum = family !== 'mop';
+  const addMop = family === 'mop' || family === 'swappable' || family === 'combo';
+  const addCombo = family === 'combo';
+
+  if (addVacuum) {
+    modes.push({
+      label: 'Vacuum',
+      mode: CLEAN_MODE_VACUUM,
+      modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }],
+    });
+    // Deep Clean (two-pass + carpet boost) — applies to any vacuum-capable robot.
+    modes.push({
+      label: 'Deep Clean',
+      mode: CLEAN_MODE_DEEP_CLEAN,
+      modeTags: [
+        { value: RvcCleanMode.ModeTag.Vacuum },
+        { value: RvcCleanMode.ModeTag.DeepClean },
+      ],
+    });
+  }
+  if (addMop) {
+    modes.push({
+      label: 'Mop',
+      mode: CLEAN_MODE_MOP,
+      modeTags: [{ value: RvcCleanMode.ModeTag.Mop }],
+    });
+  }
+  if (addCombo) {
+    modes.push({
+      label: 'Vacuum then Mop',
+      mode: CLEAN_MODE_VACUUM_THEN_MOP,
+      // Matter's VacuumThenMop tag is the semantic one; carry Vacuum+Mop too so
+      // older controllers that only look at primary tags still understand it.
+      modeTags: [
+        { value: RvcCleanMode.ModeTag.VacuumThenMop },
+        { value: RvcCleanMode.ModeTag.Vacuum },
+        { value: RvcCleanMode.ModeTag.Mop },
+      ],
+    });
+  }
+
+  // Safety net — every family must contribute at least one mode for Matter
+  // conformance. 'unknown' falls through to plain Vacuum.
+  if (modes.length === 0) {
+    modes.push({
+      label: 'Vacuum',
+      mode: CLEAN_MODE_VACUUM,
+      modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }],
+    });
+  }
+  return modes;
+}
 
 // Operational states.
 // NOTE: `operationalStateLabel` is only allowed for manufacturer-specific IDs (128-191),
@@ -153,6 +221,10 @@ export class RoombaDevice {
    */
   private missionMaxIndex = 0;
 
+  private readonly family: RoombaFamily;
+  /** Most recent RvcCleanMode the controller asked for. Checked at startCleaning time. */
+  private pendingCleanMode: number | undefined;
+
   constructor(
     private readonly connection: RoombaConnection,
     private readonly log: AnsiLogger,
@@ -163,6 +235,7 @@ export class RoombaDevice {
     userPmapvId?: string,
     roomCleanDurationMinutes?: number,
     roomCleanSqft?: number,
+    family: RoombaFamily = 'unknown',
   ) {
     this.serverMode = serverMode;
     this.rooms = rooms ?? [];
@@ -170,6 +243,14 @@ export class RoombaDevice {
     this.userPmapvId = userPmapvId;
     this.roomCleanDurationMs = Math.max(1, roomCleanDurationMinutes ?? 10) * 60_000;
     this.roomCleanSqft = Math.max(1, roomCleanSqft ?? 75);
+    this.family = family;
+    const supportedCleanModes = buildSupportedCleanModes(family);
+    // Prefer a Vacuum-tagged mode as the initial current value — matches what
+    // every Roomba ships with when the bin is installed. For mop-only robots
+    // fall back to the first (Mop) entry.
+    const initialCleanMode =
+      supportedCleanModes.find((m) => m.modeTags?.some((t) => t.value === RvcCleanMode.ModeTag.Vacuum))?.mode ??
+      supportedCleanModes[0].mode;
     this.deviceName = connection.getDeviceName();
     this.serialNumber = serialNumber;
 
@@ -189,8 +270,8 @@ export class RoombaDevice {
       mode,
       RUN_MODE_IDLE,
       SUPPORTED_RUN_MODES,
-      CLEAN_MODE_VACUUM,
-      SUPPORTED_CLEAN_MODES,
+      initialCleanMode,
+      supportedCleanModes,
       undefined, // currentPhase
       undefined, // phaseList
       RvcOperationalState.OperationalState.Docked,
@@ -351,9 +432,13 @@ export class RoombaDevice {
     // room-targeted clean via the dorita980 `cleanRoom` command — otherwise a whole-home
     // clean. Roomba requires pmapId + userPmapvId for room cleans; if those aren't in
     // the config the room path degrades to a whole-home clean with a log warning.
-    this.device.addCommandHandler('changeToMode', async ({ request }) => {
+    // RvcRunMode.changeToMode: start / stop / begin mapping run.
+    // Fully-qualified name because the short key 'changeToMode' also targets
+    // ModeSelect and would collide with RvcCleanMode.changeToMode (whose mode
+    // ids 1-4 overlap with our run-mode ids numerically).
+    this.device.addCommandHandler('RvcRunMode.changeToMode', async ({ request }) => {
       const newMode = request.newMode;
-      this.log.info(`changeToMode requested: ${newMode}`);
+      this.log.info(`RvcRunMode.changeToMode requested: ${newMode}`);
       try {
         if (newMode === RUN_MODE_CLEANING) {
           const status = this.connection.getStatus();
@@ -370,6 +455,25 @@ export class RoombaDevice {
         }
       } catch (err) {
         this.log.warn(`Failed to change run mode: ${err}`);
+      }
+    });
+
+    // RvcCleanMode.changeToMode: record which clean mode the controller wants.
+    // Matterbridge computes the actual ChangeToModeResponse internally (based on
+    // supportedModes) and doesn't accept a return value from the handler — so
+    // we can't cleanly reject "Mop on a bin-installed swappable" at this layer.
+    // Instead we remember the pending mode, and gate it in startCleaning() so
+    // the user sees the denial + reason when they actually press Clean.
+    this.device.addCommandHandler('RvcCleanMode.changeToMode', async ({ request }) => {
+      const newMode = request.newMode;
+      this.pendingCleanMode = newMode;
+      this.log.info(`RvcCleanMode.changeToMode requested: ${newMode}`);
+      const denial = this.validateCleanMode(newMode);
+      if (denial) {
+        // Log only — matterbridge's cluster server will have already accepted
+        // the mode change by the time we get here. The denial is surfaced at
+        // startCleaning time if the user proceeds to press Clean.
+        this.log.warn(`Clean mode ${newMode} currently unavailable: ${denial.statusText}`);
       }
     });
 
@@ -441,10 +545,65 @@ export class RoombaDevice {
   }
 
   /**
+   * Check whether the robot can currently perform the requested clean mode.
+   * Returns an InvalidInMode response struct when it can't (with human-readable
+   * `statusText` the controller surfaces to the user), or `null` when the mode
+   * is fine to proceed.
+   *
+   * Matter spec: ModeBase.ChangeToModeResponse statuses —
+   *   0 = Success, 1 = UnsupportedMode, 2 = GenericFailure, 3 = InvalidInMode.
+   * We use InvalidInMode (3) for tool-mismatch cases; the controller interprets
+   * that as "not possible right now" rather than "the device doesn't support it
+   * at all", which matches the semantics on a swappable robot.
+   */
+  private validateCleanMode(newMode: number): { status: number; statusText: string } | null {
+    const tool = this.connection.getStatus().installedTool;
+    const isVacuumMode = newMode === CLEAN_MODE_VACUUM || newMode === CLEAN_MODE_DEEP_CLEAN;
+    const isMopMode = newMode === CLEAN_MODE_MOP;
+    const isComboMode = newMode === CLEAN_MODE_VACUUM_THEN_MOP;
+
+    if (this.family === 'swappable') {
+      if (isMopMode && !tool.mopInstalled) {
+        return {
+          status: 3,
+          statusText: 'Swap in the mop reservoir first — the bin is currently installed.',
+        };
+      }
+      if (isVacuumMode && !tool.binInstalled) {
+        return {
+          status: 3,
+          statusText: 'Swap in the dust bin first — the mop reservoir is currently installed.',
+        };
+      }
+    }
+    if ((isMopMode || isComboMode) && this.family === 'combo' && tool.padFaulted) {
+      return { status: 3, statusText: 'Mop pad is missing or not detected. Reseat the pad.' };
+    }
+    // Combo & mop-only families accept mop modes unconditionally; the robot's
+    // own "pad missing" error will surface via OperationalError if the user
+    // starts cleaning without one.
+    return null;
+  }
+
+  /**
    * Decide between a whole-home and a room-targeted clean based on the current
    * `selectedAreas`. Called when the controller transitions RvcRunMode -> Cleaning.
    */
   private async startCleaning(): Promise<void> {
+    // Gate against tool-mismatch: swappable robots can't do Mop with the bin
+    // installed or Vacuum with the mop reservoir installed. Throw early so the
+    // user sees a helpful message in the log and Matter's RvcOperationalState
+    // stays in whatever state it was, rather than going Running on a no-op clean.
+    if (this.pendingCleanMode !== undefined) {
+      const denial = this.validateCleanMode(this.pendingCleanMode);
+      if (denial) {
+        this.log.error(
+          `Cannot start clean: selected clean mode ${this.pendingCleanMode} is unavailable — ${denial.statusText}`,
+        );
+        throw new Error(denial.statusText);
+      }
+    }
+
     if (this.selectedAreas.length === 0) {
       // Whole-home clean: clear any stale per-area state from a previous room mission.
       this.log.info('Starting whole-home clean (no areas selected)');

@@ -123,6 +123,40 @@ export interface RoombaInfo {
   hardwareVer: string;
 }
 
+/**
+ * Robot hardware family classification, derived at startup from `sku`.
+ * Drives which Matter `RvcCleanMode` options the plugin advertises.
+ */
+export type RoombaFamily =
+  /** Vacuum-only (900, i1-i4, older). */
+  | 'vacuum'
+  /** Swappable: ships with a bin; owner can physically swap in a mop reservoir
+   *  (j5, j6, some i7s). Mop and Vacuum modes are mutually exclusive at any moment. */
+  | 'swappable'
+  /** Combo: integrated bin+tank, auto-switches per surface (j7 Combo, j9 Combo). */
+  | 'combo'
+  /** Mop-only (Braava m6, m8). */
+  | 'mop'
+  /** Unknown SKU — default to vacuum-only to avoid surfacing a mop option that doesn't work. */
+  | 'unknown';
+
+/**
+ * Snapshot of the currently-installed cleaning tool, derived from MQTT state.
+ * Used alongside `RoombaFamily` to decide which modes are currently *available*
+ * (vs. theoretically supported) on swappable models.
+ */
+export interface RoombaInstalledTool {
+  /** Dust bin is physically installed and ready to collect debris. */
+  binInstalled: boolean;
+  /** Water tank / mop reservoir is installed. */
+  mopInstalled: boolean;
+  /**
+   * Combo-only: `detectedPad === "invalid"` or any pad error state.
+   * Controllers should treat mop modes as blocked when this is true.
+   */
+  padFaulted: boolean;
+}
+
 export interface RoombaStatus {
   running: boolean;
   charging: boolean;
@@ -142,6 +176,8 @@ export interface RoombaStatus {
   missionElapsedMin: number;
   /** Historical average mission length in minutes (from bbmssn.aMssnM). 0 if unknown. */
   avgMissionMin: number;
+  /** Live-state tool detection used to gate Vacuum vs Mop clean modes. */
+  installedTool: RoombaInstalledTool;
 }
 
 export class RoombaConnection extends EventEmitter {
@@ -429,6 +465,27 @@ export class RoombaConnection extends EventEmitter {
         this.log.info(`[bbmssn] aMssnM=${bb.aMssnM} nMssnC=${bb.nMssnC}`);
       }
     }
+    // Capabilities + installed-tool fields. Only log once per connection when
+    // they appear; they're static per robot/tool-swap and noisy otherwise.
+    const capFields: Array<[string, unknown]> = [
+      ['sku', (state as { sku?: string }).sku],
+      ['cap', (state as { cap?: unknown }).cap],
+      ['tankLvl', (state as { tankLvl?: number }).tankLvl],
+      ['bin', (state as { bin?: unknown }).bin],
+      ['mopReady', (state as { mopReady?: unknown }).mopReady],
+      ['detectedPad', (state as { detectedPad?: unknown }).detectedPad],
+      ['padWetness', (state as { padWetness?: unknown }).padWetness],
+      ['subModSwVer', (state as { subModSwVer?: unknown }).subModSwVer],
+    ];
+    for (const [name, val] of capFields) {
+      if (val === undefined) continue;
+      const sigKey = `cap:${name}`;
+      const sig = JSON.stringify(val);
+      if (sig !== (this.lastVerboseSignatures as Record<string, string>)[sigKey]) {
+        (this.lastVerboseSignatures as Record<string, string>)[sigKey] = sig;
+        this.log.info(`[${name}] ${sig}`);
+      }
+    }
   }
 
   getInfo(): RoombaInfo {
@@ -439,6 +496,66 @@ export class RoombaConnection extends EventEmitter {
       softwareVer: (s.softwareVer as string | undefined) ?? 'unknown',
       hardwareVer: (s.hardwareVer as string | undefined) ?? 'unknown',
     };
+  }
+
+  /**
+   * Classify the robot into a cleaning-mode family based on its SKU. This drives
+   * which Matter `RvcCleanMode` options the plugin advertises at startup.
+   *
+   * Roomba SKUs follow the pattern `<letter><digits><modifiers>`:
+   *   - j5*, j6*, i7+ (pre-Combo): bin standard, mop reservoir is a sold-separately swap.
+   *   - j7/j9 with "Combo" marker: integrated bin+tank, auto-switches per surface.
+   *   - m6, m8 (Braava): mop-only.
+   *   - i1-i4, 600/700/800/900 series, s9: vacuum-only.
+   *
+   * The Combo identifier isn't in SKU — iRobot uses model suffixes like "J7 Combo".
+   * The cloud API returns distinct SKUs for Combo units (e.g. `j755040`) but the
+   * difference from a non-Combo `j755020` isn't published. Fall back to checking
+   * whether live state ever reports `tankLvl` or `mopReady` — if yes, treat as combo.
+   */
+  classifyFamily(): RoombaFamily {
+    const sku = (this.latestState.sku ?? this.config.model ?? '').toString();
+    const head = sku.slice(0, 1).toLowerCase();
+
+    if (head === 'm') return 'mop';
+
+    // Combo detection: live state has revealed tank/mop fields → treat as combo.
+    // This covers j7/j9 Combo, s9+ Combo, and future combo units regardless of SKU.
+    if (this.latestState.tankLvl !== undefined || this.latestState.mopReady !== undefined) {
+      return 'combo';
+    }
+
+    // j/i series: swappable models ship with a swappable bin + optional mop cartridge.
+    // j1-j6 pre-Combo are classic swappable; j7/j9 non-Combo are rare but possible.
+    if ((head === 'j' || head === 'i') && /^[ji][1-6]/.test(sku)) {
+      return 'swappable';
+    }
+
+    // Older vacuum-only models (600-900) and s-series, plus i1-i4.
+    if (head === 's' || /^\d{3}/.test(sku) || (head === 'i' && /^i[1-4]/.test(sku))) {
+      return 'vacuum';
+    }
+
+    // Newer j7/j9 default to combo-ish to surface options; runtime gating still
+    // applies. Unknown SKUs fall back to vacuum-only to avoid false mop promises.
+    if (head === 'j') return 'combo';
+    return 'unknown';
+  }
+
+  /**
+   * Read current tool installation from MQTT state. Used to gate which modes
+   * are *currently* available on swappable models (owner physically swapped to
+   * the mop reservoir) and to detect pad faults on combo units.
+   */
+  getInstalledTool(): RoombaInstalledTool {
+    const s = this.latestState;
+    const binInstalled = s.bin?.present !== false; // missing field defaults to "present"
+    const mopInstalled =
+      (typeof s.tankLvl === 'number' && s.tankLvl >= 0 && s.bin?.present === false) ||
+      s.mopReady?.tankPresent === true ||
+      (s.detectedPad !== undefined && s.detectedPad !== 'invalid');
+    const padFaulted = s.detectedPad === 'invalid';
+    return { binInstalled, mopInstalled, padFaulted };
   }
 
   getStatus(): RoombaStatus {
@@ -469,6 +586,7 @@ export class RoombaConnection extends EventEmitter {
       missionSqft: s.cleanMissionStatus?.sqft ?? 0,
       missionElapsedMin: s.cleanMissionStatus?.mssnM ?? 0,
       avgMissionMin: s.bbmssn?.aMssnM ?? 0,
+      installedTool: this.getInstalledTool(),
     };
   }
 

@@ -43,6 +43,34 @@ declare module 'dorita980' {
     bootloaderVer?: string;
     mobilityVer?: string;
     batteryType?: string;
+    /**
+     * Installed tool on swappable / combo models. Reports whether the dust bin
+     * is physically present and its type. When the user swaps a bin-only Roomba
+     * (j5/j6) over to a mop reservoir, `bin.present` flips to false and the mop
+     * fields below populate.
+     * - `bin.type`: "std" (standard bin), varies for combo/mop carriers
+     */
+    bin?: {
+      present?: boolean;
+      full?: boolean;
+      type?: string;
+    };
+    /** Water tank level 0-100. Only populated when a mop/combo tool is installed. */
+    tankLvl?: number;
+    /** Combo-model mop readiness gate. */
+    mopReady?: {
+      tankPresent?: boolean;
+      lidClosed?: boolean;
+    };
+    /**
+     * Detected mop pad type on Combo / Braava models.
+     * Values: "reusableDry", "reusableWet", "dispDry", "dispWet", "invalid", ...
+     */
+    detectedPad?: string;
+    padWetness?: {
+      disp?: number;
+      reusable?: number;
+    };
     tankLvl?: number;
     lastCommand?: {
       command: string;

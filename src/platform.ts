@@ -178,6 +178,32 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     const connection = new RoombaConnection(deviceConfig, this.log);
     this.connections.set(blid, connection);
 
+    // Connect first so we can classify the robot by SKU BEFORE building the Matter
+    // device — supported clean modes depend on family (vacuum/swappable/combo/mop)
+    // and Matter's SupportedModes list is fixed at endpoint construction.
+    const vendorName = deviceConfig.vendor ?? 'iRobot';
+    const FALLBACK_INFO = {
+      name: deviceConfig.name ?? blid,
+      sku: deviceConfig.model ?? 'Roomba',
+      softwareVer: 'unknown',
+      hardwareVer: 'unknown',
+    };
+    let family: 'vacuum' | 'swappable' | 'combo' | 'mop' | 'unknown' = 'unknown';
+    let identityInfo: typeof FALLBACK_INFO = FALLBACK_INFO;
+    let identityApplied = false;
+    try {
+      await withTimeout(connection.connect(), 15_000, 'connect timeout');
+      identityInfo = await withTimeout(connection.fetchIdentity(), 8_000, 'identity fetch timeout');
+      family = connection.classifyFamily();
+      this.log.info(
+        `[${deviceConfig.name ?? blid}] Classified as family "${family}" (sku=${identityInfo.sku})`,
+      );
+    } catch (err) {
+      this.log.warn(
+        `Could not pre-fetch identity for ${blid} (${err}); using config fallbacks — clean modes will default to vacuum-only.`,
+      );
+    }
+
     // Create the device with room definitions from config (empty array suppresses defaults).
     // Default to server mode ('server') — Apple Home / Google Home handle standalone RVC
     // better than bridged RVC. Users can set serverMode:false to fold it into the bridge.
@@ -192,32 +218,20 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
       deviceConfig.userPmapvId,
       deviceConfig.roomCleanDurationMinutes,
       deviceConfig.roomCleanSqft,
+      family,
     );
     this.roombaDevices.set(blid, roombaDevice);
     this.log.info(
       `[${deviceConfig.name ?? blid}] Exposing robot in ${serverMode ? 'server (standalone Matter device)' : 'bridged (under Matterbridge aggregator)'} mode`,
     );
 
-    // Try to pre-populate device identity (vendor/model/firmware) from the robot itself.
-    // Falls back to config-provided values if the robot is unreachable or slow to respond —
-    // we don't want plugin startup to hang indefinitely on the network.
-    const vendorName = deviceConfig.vendor ?? 'iRobot';
-    const FALLBACK_INFO = {
-      name: deviceConfig.name ?? blid,
-      sku: deviceConfig.model ?? 'Roomba',
-      softwareVer: 'unknown',
-      hardwareVer: 'unknown',
-    };
     try {
-      await withTimeout(connection.connect(), 15_000, 'connect timeout');
-      const info = await withTimeout(connection.fetchIdentity(), 8_000, 'identity fetch timeout');
-      roombaDevice.applyIdentity(info, vendorName, deviceConfig.model);
+      roombaDevice.applyIdentity(identityInfo, vendorName, deviceConfig.model);
+      identityApplied = true;
     } catch (err) {
-      this.log.warn(
-        `Could not pre-fetch identity for ${blid} (${err}); using config fallbacks.`,
-      );
-      roombaDevice.applyIdentity(FALLBACK_INFO, vendorName, deviceConfig.model);
+      this.log.warn(`applyIdentity failed: ${err}`);
     }
+    void identityApplied;
 
     await this.registerDevice(roombaDevice.device);
     this.log.info(`Registered Roomba device: ${connection.getDeviceName()}`);

@@ -12,7 +12,13 @@ export const RUN_MODE_CLEANING = 2;
 export const RUN_MODE_MAPPING = 3;
 
 // --- Clean Mode IDs ---
+// Matter spec: mode IDs are arbitrary uint8; what matters for controller UX is the
+// `modeTags` carried on each entry. We pick stable IDs so config references stay
+// valid across plugin restarts.
 export const CLEAN_MODE_VACUUM = 1;
+export const CLEAN_MODE_MOP = 2;
+export const CLEAN_MODE_VACUUM_THEN_MOP = 3;
+export const CLEAN_MODE_DEEP_CLEAN = 4;
 
 /**
  * Map Roomba status to a Matter RvcRunMode mode ID. Roomba reports a training
