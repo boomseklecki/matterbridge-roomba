@@ -442,13 +442,26 @@ export class RoombaDevice {
 
     // ServiceArea: record which rooms the controller wants cleaned. The actual
     // clean command is sent once the controller transitions RvcRunMode to Cleaning.
+    //
+    // Matter spec §1.17.7.1.1: `newAreas=[]` means "unconstrained" (clean
+    // everywhere). iOS Home's room picker uses this when the user picks "All
+    // Rooms" — but then re-renders the ticked-rooms UI from the SelectedAreas
+    // attribute and shows *only the first configured room* ticked (looks like a
+    // client UI bug; macOS Home renders the same empty-list attribute as "All
+    // Rooms" correctly). Workaround: when newAreas is empty, internally treat
+    // it as "whole-home" (startCleaning will dispatch `clean()` not
+    // `cleanRoom()`), but mirror back the FULL list of configured areaIds to
+    // the attribute so iOS Home's UI matches user intent.
     this.device.addCommandHandler('selectAreas', async ({ request }) => {
       const newAreas = (request.newAreas ?? []) as number[];
       this.selectedAreas = [...newAreas];
       this.log.info(`selectAreas requested: [${newAreas.join(', ')}]`);
-      // Also mirror into the cluster attribute so controllers can read it back.
+      const mirrorValue =
+        newAreas.length === 0 && this.rooms.length > 0
+          ? this.rooms.map((r) => r.areaId)
+          : this.selectedAreas;
       try {
-        this.device.setAttribute('serviceArea', 'selectedAreas', this.selectedAreas, this.log);
+        this.device.setAttribute('serviceArea', 'selectedAreas', mirrorValue, this.log);
       } catch (err) {
         this.log.debug(`Failed to mirror selectedAreas: ${err}`);
       }
@@ -956,14 +969,13 @@ export class RoombaDevice {
         if (this.lastPushed.currentArea !== null) {
           this.setCurrentArea(null);
         }
-        if (this.selectedAreas.length > 0) {
-          this.selectedAreas = [];
-          try {
-            this.device.setAttribute('serviceArea', 'selectedAreas', [], this.log);
-          } catch (err) {
-            this.log.debug(`Failed to clear selectedAreas: ${err}`);
-          }
-        }
+        // Don't clear `selectedAreas` on mission end — Apple Home re-sends
+        // `selectAreas` before every subsequent mission so there's no risk of
+        // stale selections carrying over. AND clearing triggers the iPhone
+        // Home UI regression where empty SelectedAreas renders as "first room
+        // ticked" instead of "all rooms". Leaving the attribute alone means
+        // the room picker keeps displaying the user's last selection between
+        // runs, which is also slightly better UX.
         this.missionStartMs = undefined;
         this.missionStartSqft = undefined;
       } else if (status.running && this.selectedAreas.length > 1) {
