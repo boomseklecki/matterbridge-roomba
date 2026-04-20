@@ -241,9 +241,11 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     // with the robot's real firmware now that the server is up.
     await roombaDevice.overrideRootNodeIdentity();
 
-    // Set up reconnection handler
+    // Set up reconnection handler + reachable flag tracking so the Matter
+    // controller's "No Response" tile lights up when the robot drops off.
     connection.on('disconnected', () => {
       this.log.warn(`Roomba ${blid} disconnected, will attempt reconnection...`);
+      roombaDevice.setReachable(false);
       this.scheduleReconnect(blid, deviceConfig);
     });
 
@@ -322,6 +324,7 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
         if (device) {
           device.markActive();
           device.initializeState();
+          device.setReachable(true);
         }
         this.log.info(`Roomba ${blid} connected and configured`);
       } catch (err) {
@@ -574,6 +577,7 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
             // stale initial values.
             device.markActive();
             device.initializeState();
+            device.setReachable(true);
           }
           this.reconnectAttempts.delete(blid);
           this.log.info(`Reconnected to Roomba ${blid}`);

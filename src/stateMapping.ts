@@ -14,11 +14,14 @@ export const RUN_MODE_MAPPING = 3;
 // --- Clean Mode IDs ---
 // Matter spec: mode IDs are arbitrary uint8; what matters for controller UX is the
 // `modeTags` carried on each entry. We pick stable IDs so config references stay
-// valid across plugin restarts.
-export const CLEAN_MODE_VACUUM = 1;
+// valid across plugin restarts. Each vacuum-capable mode has a "cleaning preset"
+// the plugin applies to the robot via `applyCleaningPreset` before starting a clean.
+export const CLEAN_MODE_VACUUM = 1; // default behavior: Auto boost + Auto passes
 export const CLEAN_MODE_MOP = 2;
 export const CLEAN_MODE_VACUUM_THEN_MOP = 3;
-export const CLEAN_MODE_DEEP_CLEAN = 4;
+export const CLEAN_MODE_DEEP_CLEAN = 4; // Performance boost + Two passes
+export const CLEAN_MODE_MAX = 5; // Performance boost + Auto passes
+export const CLEAN_MODE_QUICK = 6; // Eco boost + One pass
 
 /**
  * Map Roomba status to a Matter RvcRunMode mode ID. Roomba reports a training

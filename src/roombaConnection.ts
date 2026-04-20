@@ -693,6 +693,40 @@ export class RoombaConnection extends EventEmitter {
   }
 
   /**
+   * Apply a pair of cleaning-power preferences (carpet boost + passes). Used
+   * when the controller picks a `RvcCleanMode` like Auto / Quick / Max /
+   * DeepClean — each of these presets corresponds to a specific combination.
+   * The robot stores these persistently; subsequent `clean()`/`cleanRoom()`
+   * commands use whatever preset was last applied.
+   */
+  async applyCleaningPreset(
+    preset: 'auto' | 'quick' | 'max' | 'deep',
+  ): Promise<void> {
+    if (!this.robot) throw new Error('Not connected');
+    switch (preset) {
+      case 'auto':
+        await this.robot.setCarpetBoostAuto();
+        await this.robot.setCleaningPassesAuto();
+        return;
+      case 'quick':
+        // Eco carpet boost + single pass = fast, quiet, light clean.
+        await this.robot.setCarpetBoostEco();
+        await this.robot.setCleaningPassesOne();
+        return;
+      case 'max':
+        // Performance boost + auto passes = high suction, smart pass count.
+        await this.robot.setCarpetBoostPerformance();
+        await this.robot.setCleaningPassesAuto();
+        return;
+      case 'deep':
+        // Performance boost + two passes = thorough double-cover.
+        await this.robot.setCarpetBoostPerformance();
+        await this.robot.setCleaningPassesTwo();
+        return;
+    }
+  }
+
+  /**
    * Start a room-targeted clean. `regions` must contain one or more
    * `{ region_id, type }` pairs — the robot rejects the command if any region is
    * not present in its active pmap. `pmapId` + `userPmapvId` identify which map

@@ -17,6 +17,8 @@ import {
   CLEAN_MODE_MOP,
   CLEAN_MODE_VACUUM_THEN_MOP,
   CLEAN_MODE_DEEP_CLEAN,
+  CLEAN_MODE_MAX,
+  CLEAN_MODE_QUICK,
   statusToRunMode,
   statusToOperationalState,
   errorCodeToMatterError,
@@ -56,9 +58,32 @@ function buildSupportedCleanModes(family: RoombaFamily): RvcCleanMode.ModeOption
     modes.push({
       label: 'Vacuum',
       mode: CLEAN_MODE_VACUUM,
-      modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }],
+      modeTags: [
+        { value: RvcCleanMode.ModeTag.Vacuum },
+        { value: RvcCleanMode.ModeTag.Auto },
+      ],
     });
-    // Deep Clean (two-pass + carpet boost) — applies to any vacuum-capable robot.
+    // Quick: one-pass + eco suction. Faster, quieter, lighter — useful for
+    // touch-ups or night-time runs.
+    modes.push({
+      label: 'Quick',
+      mode: CLEAN_MODE_QUICK,
+      modeTags: [
+        { value: RvcCleanMode.ModeTag.Vacuum },
+        { value: RvcCleanMode.ModeTag.Quick },
+        { value: RvcCleanMode.ModeTag.LowEnergy },
+      ],
+    });
+    // Max: performance boost + auto passes. Full suction on whatever surface.
+    modes.push({
+      label: 'Max Power',
+      mode: CLEAN_MODE_MAX,
+      modeTags: [
+        { value: RvcCleanMode.ModeTag.Vacuum },
+        { value: RvcCleanMode.ModeTag.Max },
+      ],
+    });
+    // Deep Clean: performance + two passes. Most thorough.
     modes.push({
       label: 'Deep Clean',
       mode: CLEAN_MODE_DEEP_CLEAN,
@@ -480,7 +505,13 @@ export class RoombaDevice {
    */
   private validateCleanMode(newMode: number): { status: number; statusText: string } | null {
     const tool = this.connection.getStatus().installedTool;
-    const isVacuumMode = newMode === CLEAN_MODE_VACUUM || newMode === CLEAN_MODE_DEEP_CLEAN;
+    // Every vacuum-power preset (Vacuum / DeepClean / Max / Quick) requires the
+    // bin to be installed on a swappable robot.
+    const isVacuumMode =
+      newMode === CLEAN_MODE_VACUUM ||
+      newMode === CLEAN_MODE_DEEP_CLEAN ||
+      newMode === CLEAN_MODE_MAX ||
+      newMode === CLEAN_MODE_QUICK;
     const isMopMode = newMode === CLEAN_MODE_MOP;
     const isComboMode = newMode === CLEAN_MODE_VACUUM_THEN_MOP;
 
@@ -523,6 +554,18 @@ export class RoombaDevice {
           `Cannot start clean: selected clean mode ${this.pendingCleanMode} is unavailable — ${denial.statusText}`,
         );
         throw new Error(denial.statusText);
+      }
+      // Apply the Roomba-side cleaning preset (carpet boost + passes) that
+      // matches the selected Matter mode. The robot remembers these
+      // persistently, so the subsequent `clean()`/`cleanRoom()` picks them up.
+      const preset = matterModeToPreset(this.pendingCleanMode);
+      if (preset) {
+        try {
+          this.log.info(`Applying cleaning preset "${preset}" for mode ${this.pendingCleanMode}`);
+          await this.connection.applyCleaningPreset(preset);
+        } catch (err) {
+          this.log.warn(`applyCleaningPreset(${preset}) failed: ${err} (continuing with previous preset)`);
+        }
       }
     }
 
@@ -726,6 +769,22 @@ export class RoombaDevice {
   }
 
   /**
+   * Flip the `reachable` attribute on BridgedDeviceBasicInformation. Apple Home
+   * reads this to display "No Response" on an accessory tile when the robot is
+   * unreachable; matter.js auto-fires the `ReachableChanged` event when the
+   * attribute transitions. Safe to call before `markActive()` — we skip the
+   * write silently in that case, avoiding the "endpoint inactive" error spam.
+   */
+  setReachable(reachable: boolean): void {
+    if (!this.endpointActive) return;
+    try {
+      this.device.setAttribute('bridgedDeviceBasicInformation', 'reachable', reachable, this.log);
+    } catch (err) {
+      this.log.debug(`setReachable(${reachable}) failed: ${err}`);
+    }
+  }
+
+  /**
    * Cache of last-pushed attribute values so we only call setAttribute when something
    * actually changed. Roomba state messages arrive every ~2s during active cleaning,
    * and matterbridge logs every setAttribute — without a diff here, the log gets
@@ -742,6 +801,15 @@ export class RoombaDevice {
   } = {};
   /** Tracks whether the robot was running on the previous state update so we can detect the running→idle transition. */
   private wasActive = false;
+  /**
+   * Mission-level state carried across state updates so we can synthesize a
+   * single `OperationCompletion` event at the running→idle edge with the total
+   * elapsed time. Matter 1.4 §7.5.7.2 — this event lets Apple Home (iOS 18.4+)
+   * push a "cleaning finished" notification to the user's phone.
+   */
+  private missionActive = false;
+  private missionStartTs = 0;
+  private missionLastError = 0;
   /**
    * True once we've seen `tankLevel > 0` at least once — proves the robot has a
    * water tank installed. Without this, we'd spuriously report "Water Tank Empty"
@@ -822,7 +890,53 @@ export class RoombaDevice {
       // while the robot is still docked) and clear the selection out from under it,
       // causing the mission to fall back to a whole-home clean.
       const isActive = status.running || status.paused;
+
+      // Mission lifecycle tracking — used for OperationCompletion event firing
+      // at the running→idle transition. We want the ELAPSED time of the whole
+      // mission, not just the current running stretch, so start the timer on
+      // the first running edge and only reset at mission end.
+      if (!this.missionActive && status.running) {
+        this.missionActive = true;
+        this.missionStartTs = Date.now();
+        this.missionLastError = 0;
+      }
+      if (this.missionActive && status.errorCode !== 0) {
+        // Latch any error we see during the mission — the final state might
+        // clear errorCode to 0 before we emit the completion event, but users
+        // still want to know "why" the mission ended.
+        this.missionLastError = status.errorCode;
+      }
+
       if (this.wasActive && !isActive) {
+        // Fire the Matter OperationCompletion event with the total mission time
+        // and the final error state. Apple Home (iOS 18.4+) consumes this to
+        // push a "cleaning finished" notification. Fired exactly once per
+        // mission, at the running→idle edge.
+        if (this.missionActive) {
+          const totalOperationalTime = Math.round((Date.now() - this.missionStartTs) / 1000);
+          const completionErrorCode = errorCodeToMatterError(
+            this.missionLastError,
+            { binFull: status.binFull },
+          ).errorStateId;
+          this.device
+            .triggerEvent(
+              'rvcOperationalState',
+              'operationCompletion',
+              {
+                completionErrorCode,
+                totalOperationalTime,
+                pausedTime: null,
+              },
+              this.log,
+            )
+            .catch((err) => this.log.debug(`triggerEvent operationCompletion failed: ${err}`));
+          this.log.info(
+            `Mission completed: errorCode=${completionErrorCode} totalOperationalTime=${totalOperationalTime}s`,
+          );
+          this.missionActive = false;
+          this.missionLastError = 0;
+        }
+
         if (this.lastPushed.currentArea !== null) {
           this.setCurrentArea(null);
         }
@@ -855,6 +969,26 @@ export class RoombaDevice {
   initializeState(): void {
     const status = this.connection.getStatus();
     this.updateMatterState(status);
+  }
+}
+
+/**
+ * Translate a Matter `RvcCleanMode` id to a Roomba cleaning preset. Returns
+ * `null` for modes that don't correspond to a vacuum-power preset (e.g. Mop
+ * modes — the Roomba picks suction automatically based on the installed tool).
+ */
+function matterModeToPreset(mode: number): 'auto' | 'quick' | 'max' | 'deep' | null {
+  switch (mode) {
+    case CLEAN_MODE_VACUUM:
+      return 'auto';
+    case CLEAN_MODE_QUICK:
+      return 'quick';
+    case CLEAN_MODE_MAX:
+      return 'max';
+    case CLEAN_MODE_DEEP_CLEAN:
+      return 'deep';
+    default:
+      return null;
   }
 }
 

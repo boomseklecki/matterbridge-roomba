@@ -124,6 +124,20 @@ declare module 'dorita980' {
     train(): Promise<void>;
     /** Trigger the AutoEmpty dock to evacuate the bin (CleanBase models only). */
     evac(): Promise<void>;
+
+    /** Carpet boost: auto-detect and ramp suction on carpet. */
+    setCarpetBoostAuto(): Promise<void>;
+    /** Carpet boost: always run at max suction (Performance preset). */
+    setCarpetBoostPerformance(): Promise<void>;
+    /** Carpet boost: always run at low suction (Eco preset, quietest). */
+    setCarpetBoostEco(): Promise<void>;
+    /** Cleaning passes: auto-decide (single pass, or two on dirt detection). */
+    setCleaningPassesAuto(): Promise<void>;
+    /** Cleaning passes: force single pass. */
+    setCleaningPassesOne(): Promise<void>;
+    /** Cleaning passes: force two passes over every area. */
+    setCleaningPassesTwo(): Promise<void>;
+
     end(): void;
 
     getRobotState(fields: string[]): Promise<RobotState>;
