@@ -415,44 +415,103 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     for (const deviceConfig of devices) {
       const connection = this.connections.get(deviceConfig.blid);
       if (!connection) continue;
-      const maps = connection.getDiscoveredMaps();
-      if (maps.length === 0) {
+      const discovered = connection.getDiscoveredMaps();
+      if (discovered.length === 0) {
         this.log.info(
           `[${deviceConfig.name ?? deviceConfig.blid}] No rooms discovered yet. ` +
-            `Turn on discoverRooms, clean each room once from the iRobot app, then click this again.`,
+            `Turn on discoverRooms, clean each room once from the iRobot app (per floor if multi-floor), then click this again.`,
         );
         continue;
       }
 
-      // Prefer the pmap we've seen the most regions on — handles robots that still
-      // remember an older retired map.
-      const primary = maps.slice().sort((a, b) => b.regions.length - a.regions.length)[0];
-      deviceConfig.pmapId = primary.pmapId;
-      if (primary.userPmapvId) deviceConfig.userPmapvId = primary.userPmapvId;
+      const deviceLabel = deviceConfig.name ?? deviceConfig.blid;
+      if (discovered.length === 1) {
+        // Single-map case: use the top-level `pmapId`/`userPmapvId` and keep the
+        // config shape simple. Preserve any previously user-renamed room names.
+        const only = discovered[0];
+        deviceConfig.pmapId = only.pmapId;
+        if (only.userPmapvId) deviceConfig.userPmapvId = only.userPmapvId;
+        // Explicit single-map mode: clear any `maps` array left over from an
+        // earlier multi-map discovery.
+        deviceConfig.maps = [];
 
-      const existingByAreaId = new Map((deviceConfig.rooms ?? []).map((r) => [r.areaId, r]));
-      // If a `maps` array is configured, try to tag new rooms with the matching
-      // map's mapId. Discovery only captures one pmapId at a time (whichever the
-      // robot's currently on), so we can match it back to the config.
-      const captureMap = deviceConfig.maps?.find((m) => m.pmapId === primary.pmapId);
-      deviceConfig.rooms = primary.regions.map((region) => {
-        const areaId = toAreaId(region.regionId);
-        const existing = existingByAreaId.get(areaId);
+        const existingByAreaId = new Map((deviceConfig.rooms ?? []).map((r) => [r.areaId, r]));
+        deviceConfig.rooms = only.regions.map((region) => {
+          const areaId = toAreaId(region.regionId);
+          const existing = existingByAreaId.get(areaId);
+          return {
+            areaId,
+            regionId: region.regionId,
+            regionType: region.type,
+            name: existing?.name ?? `Room ${region.regionId}`,
+            type: existing?.type,
+            floor: existing?.floor,
+          };
+        });
+        updatedAny = true;
+        this.log.info(
+          `[${deviceLabel}] Saved ${deviceConfig.rooms.length} room(s) from pmap ${only.pmapId}. ` +
+            `Rename them in the config UI, then restart the plugin.`,
+        );
+        continue;
+      }
+
+      // Multi-map case: build a `maps[]` array and tag each room with its owning
+      // mapId. Preserve existing `maps` entries (to keep user-chosen names + ids)
+      // by matching on `pmapId`; assign fresh mapIds to any newly-seen pmaps.
+      const existingMapByPmap = new Map((deviceConfig.maps ?? []).map((m) => [m.pmapId, m]));
+      const usedMapIds = new Set(
+        (deviceConfig.maps ?? []).map((m) => m.mapId).filter((id): id is number => typeof id === 'number'),
+      );
+      const nextMapId = (): number => {
+        let id = 1;
+        while (usedMapIds.has(id)) id++;
+        usedMapIds.add(id);
+        return id;
+      };
+
+      const newMaps = discovered.map((disc, idx) => {
+        const existing = existingMapByPmap.get(disc.pmapId);
+        const mapId = existing?.mapId ?? nextMapId();
         return {
-          areaId,
-          regionId: region.regionId,
-          regionType: region.type,
-          name: existing?.name ?? `Room ${region.regionId}`,
-          type: existing?.type,
-          floor: existing?.floor,
-          mapId: existing?.mapId ?? captureMap?.mapId,
+          mapId,
+          name: existing?.name ?? `Map ${idx + 1}`,
+          pmapId: disc.pmapId,
+          userPmapvId: disc.userPmapvId,
         };
       });
-      const newRooms = deviceConfig.rooms;
+      const pmapToMatterMapId = new Map(newMaps.map((m) => [m.pmapId, m.mapId]));
+
+      const existingByAreaId = new Map((deviceConfig.rooms ?? []).map((r) => [r.areaId, r]));
+      const newRooms: typeof deviceConfig.rooms = [];
+      for (const disc of discovered) {
+        const matterMapId = pmapToMatterMapId.get(disc.pmapId);
+        for (const region of disc.regions) {
+          const areaId = toAreaId(region.regionId);
+          const existing = existingByAreaId.get(areaId);
+          newRooms.push({
+            areaId,
+            regionId: region.regionId,
+            regionType: region.type,
+            name: existing?.name ?? `Room ${region.regionId}`,
+            type: existing?.type,
+            floor: existing?.floor,
+            mapId: existing?.mapId ?? matterMapId,
+          });
+        }
+      }
+
+      deviceConfig.maps = newMaps;
+      deviceConfig.rooms = newRooms;
+      // Top-level pmapId is unused in multi-map mode — clear for clarity.
+      // (If user reverts to a single floor later, discovery will rewrite this.)
+      delete deviceConfig.pmapId;
+      delete deviceConfig.userPmapvId;
       updatedAny = true;
       this.log.info(
-        `[${deviceConfig.name ?? deviceConfig.blid}] Saved ${newRooms.length} room(s) from map ${primary.pmapId}. ` +
-          `Rename them in the config UI, then restart the plugin.`,
+        `[${deviceLabel}] Saved ${newRooms.length} room(s) across ${newMaps.length} map(s): ` +
+          newMaps.map((m) => `${m.name} (pmap ${m.pmapId})`).join(', ') +
+          '. Rename maps and rooms in the config UI, then restart the plugin.',
       );
     }
 

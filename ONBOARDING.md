@@ -125,6 +125,32 @@ Unknown values fall back to `null` (no semantic tag, name still shows).
 
 One more restart and your rooms will show up in Apple Home / Google Home / whatever Matter controller you're using, with real names instead of the generic placeholders.
 
+### Multi-floor homes (j7+, j9+, s9+)
+
+If your Roomba stores **multiple persistent maps** — one per floor — run discovery **once per floor**:
+
+1. Set `discoverRooms: true`, restart the plugin.
+2. Place the robot on floor 1. From the iRobot app, either clean individual rooms or run a whole-floor mission. The plugin captures the first pmap's rooms.
+3. **Move the robot to floor 2** (carry it up; pmap auto-switch on some models, manual-select on others via the iRobot app's map selector).
+4. Clean rooms on floor 2 from the iRobot app. The plugin captures the second pmap's rooms under a distinct pmapId.
+5. Click **"Save discovered rooms to config"** in the Matterbridge frontend.
+
+The plugin detects that it has rooms from two (or more) pmaps and writes a `maps[]` array automatically:
+
+```jsonc
+"maps": [
+  { "mapId": 1, "name": "Map 1", "pmapId": "…", "userPmapvId": "…" },
+  { "mapId": 2, "name": "Map 2", "pmapId": "…", "userPmapvId": "…" }
+],
+"rooms": [
+  { "areaId": 1, "mapId": 1, "regionId": "1", "name": "Room 1", … },
+  …
+  { "areaId": 7, "mapId": 2, "regionId": "3", "name": "Room 3", … }
+]
+```
+
+Rename the maps (`"Map 1"` → `"Main Floor"`) and rooms, then restart. Your Matter controller will show the rooms grouped by floor.
+
 ## Troubleshooting
 
 **I don't see any discovery log after starting a clean.**
