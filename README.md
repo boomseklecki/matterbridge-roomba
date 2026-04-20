@@ -157,6 +157,7 @@ Full JSON schema in [`matterbridge-roomba.schema.json`](./matterbridge-roomba.sc
 - **No per-region progress report from the j-series firmware.** `cleanMissionStatus.sqft` and `mssnM` stay at 0 on j5+ during a mission. Without those, multi-room `currentArea` cycling relies on wall-clock time — imprecise when room sizes vary.
 - **SkipArea command not forwarded to the robot.** Matterbridge's cluster server doesn't route `SkipArea` to plugins yet, and `@karlvr/dorita980` doesn't expose a `skip()` method. We detect skip-from-iRobot-app and advance Matter state, but the other direction (skip from Matter controller → robot) is blocked upstream.
 - **"Matter Accessory" during pairing.** All open-source Matter devices use the CSA test VendorID `0xfff1`, which Apple Home doesn't map to a brand. After pairing, the accessory details correctly show `iRobot` as manufacturer.
+- **iOS Home's room picker briefly shows "1 Room" after picking "All Rooms"** — then resolves to "All Rooms" after the subscription update lands (a few seconds). This is an iOS Home UI quirk; Apple sends `selectAreas([])` to mean "unconstrained", and the plugin mirrors the full area list back so the summary renders correctly, but iOS's local picker state lags the subscription briefly. macOS Home handles the empty-list semantic correctly without any lag.
 - **Schedule / do-not-disturb / map geometry** — Matter doesn't define clusters for these. They stay in the iRobot app.
 
 ## Credits
