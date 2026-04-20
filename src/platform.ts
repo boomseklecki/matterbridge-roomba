@@ -219,6 +219,7 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
       deviceConfig.roomCleanDurationMinutes,
       deviceConfig.roomCleanSqft,
       family,
+      deviceConfig.maps,
     );
     this.roombaDevices.set(blid, roombaDevice);
     this.log.info(
@@ -430,6 +431,10 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
       if (primary.userPmapvId) deviceConfig.userPmapvId = primary.userPmapvId;
 
       const existingByAreaId = new Map((deviceConfig.rooms ?? []).map((r) => [r.areaId, r]));
+      // If a `maps` array is configured, try to tag new rooms with the matching
+      // map's mapId. Discovery only captures one pmapId at a time (whichever the
+      // robot's currently on), so we can match it back to the config.
+      const captureMap = deviceConfig.maps?.find((m) => m.pmapId === primary.pmapId);
       deviceConfig.rooms = primary.regions.map((region) => {
         const areaId = toAreaId(region.regionId);
         const existing = existingByAreaId.get(areaId);
@@ -440,6 +445,7 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
           name: existing?.name ?? `Room ${region.regionId}`,
           type: existing?.type,
           floor: existing?.floor,
+          mapId: existing?.mapId ?? captureMap?.mapId,
         };
       });
       const newRooms = deviceConfig.rooms;

@@ -34,6 +34,31 @@ export interface RoombaRoomConfig {
   type?: string;
   /** Optional floor number (defaults to 0). */
   floor?: number;
+  /**
+   * Matter map id this room belongs to — must match a `mapId` in the device's
+   * `maps` array. If omitted and `maps` is configured, falls back to the first
+   * map. If `maps` is empty/unset, ignored.
+   */
+  mapId?: number;
+}
+
+/**
+ * A Roomba persistent map. Multi-map / multi-floor homes (j7+, j9+, s9+) have
+ * distinct pmaps per floor; configure one entry per floor and each room points
+ * at its owning map by `mapId`.
+ */
+export interface RoombaMapConfig {
+  /** Matter map identifier (uint32). Must be unique within this device. */
+  mapId: number;
+  /** Human-readable label the Matter controller displays (e.g. "Main Floor"). */
+  name: string;
+  /**
+   * Persistent map id this Matter map represents. Used when dispatching room
+   * cleans — overrides the device-level `pmapId` for rooms on this map.
+   */
+  pmapId: string;
+  /** User map version id that pairs with this `pmapId`. */
+  userPmapvId?: string;
 }
 
 export interface RoombaDeviceConfig {
@@ -64,6 +89,13 @@ export interface RoombaDeviceConfig {
   serverMode?: boolean;
   /** Optional list of rooms to expose as Matter service areas. */
   rooms?: RoombaRoomConfig[];
+  /**
+   * Optional list of maps. Provide one entry per pmap when a j-series or
+   * s-series Roomba has Imprint Smart Maps for multiple floors. Each room's
+   * `mapId` picks which map it lives on. If unset, the device is treated as
+   * single-map and the top-level `pmapId` / `userPmapvId` apply to every room.
+   */
+  maps?: RoombaMapConfig[];
   /**
    * Persistent map identifier for this robot's active map (`pmap_id` from the
    * robot's `lastCommand`). Required for room-targeted cleans. Auto-captured in

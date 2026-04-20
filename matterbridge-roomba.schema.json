@@ -131,12 +131,40 @@
             "default": false
           },
           "pmapId": {
-            "description": "Persistent map identifier (auto-discovered). Required for room-targeted cleans.",
+            "description": "Persistent map identifier (auto-discovered). Required for room-targeted cleans on single-map setups. For multi-floor homes use the maps array instead.",
             "type": "string"
           },
           "userPmapvId": {
             "description": "User map version identifier (auto-discovered). Required for room-targeted cleans.",
             "type": "string"
+          },
+          "maps": {
+            "description": "Multi-floor setups: one entry per Roomba persistent map. Each room's mapId picks which map it's on. Skip this if you only have one map — the top-level pmapId/userPmapvId will apply to every room.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "mapId": {
+                  "description": "Unique Matter map identifier (uint32) used to reference this map from each room's mapId field. Pick something stable like 1, 2, 3.",
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "name": {
+                  "description": "Human-readable label shown in the Matter controller (e.g. 'Main Floor', 'Upstairs').",
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "pmapId": {
+                  "description": "Roomba's persistent map identifier for this floor (capture in discovery mode while the robot is on this floor).",
+                  "type": "string"
+                },
+                "userPmapvId": {
+                  "description": "User map version identifier that pairs with this pmapId.",
+                  "type": "string"
+                }
+              },
+              "required": ["mapId", "name", "pmapId"]
+            }
           },
           "rooms": {
             "description": "Rooms/areas to expose as Matter service areas. Populated automatically by discovery mode. Leave empty to hide the rooms selector.",
@@ -170,6 +198,11 @@
                   "description": "Optional floor number",
                   "type": "integer",
                   "default": 0
+                },
+                "mapId": {
+                  "description": "If `maps` is configured (multi-floor home), this points the room at one of those maps. Falls back to the first configured map if omitted. Ignored when `maps` is empty.",
+                  "type": "integer",
+                  "minimum": 1
                 }
               },
               "required": ["areaId", "name"]

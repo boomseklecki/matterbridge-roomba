@@ -6,7 +6,8 @@
 import { RoboticVacuumCleaner } from 'matterbridge/devices';
 import { RvcRunMode, RvcCleanMode, RvcOperationalState, ServiceArea } from 'matterbridge/matter/clusters';
 import type { AnsiLogger } from 'matterbridge/logger';
-import type { RoombaConnection, RoombaInfo, RoombaStatus, RoombaRoomConfig } from './roombaConnection.js';
+import type { RoombaConnection, RoombaInfo, RoombaStatus, RoombaRoomConfig, RoombaMapConfig } from './roombaConnection.js';
+import { buildSupportedAreas, buildSupportedMaps } from './serviceAreaBuilder.js';
 import type { RoombaFamily } from './roombaConnection.js';
 import {
   RUN_MODE_IDLE,
@@ -113,89 +114,6 @@ const SUPPORTED_OP_STATES: RvcOperationalState.OperationalStateStruct[] = [
   { operationalStateId: RvcOperationalState.OperationalState.Docked },
 ];
 
-/**
- * Matter Area namespace tag values (spec §7.19.12.4.15).
- * Extend as needed — unknown `type` strings fall back to `null` (no area type),
- * which still shows the user-provided name in the controller.
- */
-const AREA_TAG_BY_NAME: Record<string, number> = {
-  bathroom: 0x06,
-  bedroom: 0x07,
-  breakfastroom: 0x0a,
-  cellar: 0x0c,
-  closet: 0x0e,
-  dining: 0x15,
-  familyroom: 0x1d,
-  foyer: 0x1e,
-  gameroom: 0x21,
-  garage: 0x22,
-  guestbathroom: 0x26,
-  guestbedroom: 0x27,
-  guestroom: 0x29,
-  gym: 0x2a,
-  hallway: 0x2b,
-  kidsroom: 0x2d,
-  kitchen: 0x2f,
-  laundry: 0x31,
-  library: 0x33,
-  living: 0x34,
-  livingroom: 0x34,
-  lounge: 0x35,
-  mudroom: 0x36,
-  office: 0x38,
-  pantry: 0x3b,
-  patio: 0x3e,
-  playroom: 0x3f,
-  primarybathroom: 0x42,
-  primarybedroom: 0x43,
-  recroom: 0x46,
-  recreationroom: 0x46,
-  staircase: 0x52,
-  storageroom: 0x54,
-  study: 0x56,
-  sunroom: 0x57,
-};
-
-function resolveAreaTypeId(type: string | undefined): number | null {
-  if (!type) return null;
-  return AREA_TAG_BY_NAME[type.toLowerCase().replace(/[\s_-]/g, '')] ?? null;
-}
-
-/**
- * Matter's ServiceArea cluster requires `CurrentArea` to reference a valid id in
- * `SupportedAreas` (or be null — but matterbridge's helper forces a number default).
- * To keep conformance happy when the user hasn't configured any rooms, we expose a single
- * "Everywhere" catch-all area with id 1. This mirrors how the iRobot app treats a
- * whole-home clean when no zones are specified.
- */
-const EVERYWHERE_AREA: ServiceArea.Area = {
-  areaId: 1,
-  mapId: null,
-  areaInfo: {
-    locationInfo: {
-      locationName: 'Everywhere',
-      floorNumber: 0,
-      areaType: null,
-    },
-    landmarkInfo: null,
-  },
-};
-
-function buildSupportedAreas(rooms: RoombaRoomConfig[] | undefined): ServiceArea.Area[] {
-  if (!rooms || rooms.length === 0) return [EVERYWHERE_AREA];
-  return rooms.map((room) => ({
-    areaId: room.areaId,
-    mapId: null,
-    areaInfo: {
-      locationInfo: {
-        locationName: room.name,
-        floorNumber: room.floor ?? 0,
-        areaType: resolveAreaTypeId(room.type),
-      },
-      landmarkInfo: null,
-    },
-  }));
-}
 
 export class RoombaDevice {
   public readonly device: RoboticVacuumCleaner;
@@ -204,6 +122,7 @@ export class RoombaDevice {
   private readonly serialNumber: string;
   private readonly serverMode: boolean;
   private readonly rooms: RoombaRoomConfig[];
+  private readonly maps: RoombaMapConfig[];
   private readonly pmapId: string | undefined;
   private readonly userPmapvId: string | undefined;
   private readonly roomCleanDurationMs: number;
@@ -236,9 +155,11 @@ export class RoombaDevice {
     roomCleanDurationMinutes?: number,
     roomCleanSqft?: number,
     family: RoombaFamily = 'unknown',
+    maps: RoombaMapConfig[] | undefined = undefined,
   ) {
     this.serverMode = serverMode;
     this.rooms = rooms ?? [];
+    this.maps = maps ?? [];
     this.pmapId = pmapId;
     this.userPmapvId = userPmapvId;
     this.roomCleanDurationMs = Math.max(1, roomCleanDurationMinutes ?? 10) * 60_000;
@@ -254,7 +175,8 @@ export class RoombaDevice {
     this.deviceName = connection.getDeviceName();
     this.serialNumber = serialNumber;
 
-    const supportedAreas = buildSupportedAreas(rooms);
+    const supportedAreas = buildSupportedAreas(rooms, maps);
+    const supportedMaps = buildSupportedMaps(maps);
     // CurrentArea must reference a valid id in supportedAreas (or null); pick the first
     // configured area's id so Matter conformance is satisfied no matter what ids the
     // user chose.
@@ -279,7 +201,7 @@ export class RoombaDevice {
       supportedAreas,
       [], // selectedAreas
       currentArea,
-      [], // supportedMaps
+      supportedMaps,
     );
 
     this.configureCommandHandlers();
@@ -615,9 +537,13 @@ export class RoombaDevice {
       `startCleaning: ${this.selectedAreas.length} area(s) selected: [${this.selectedAreas.join(', ')}]`,
     );
 
-    // Resolve Matter areaIds back to Roomba region metadata.
+    // Resolve Matter areaIds back to Roomba region metadata, and group by map
+    // so we can verify the mission doesn't cross maps (the robot can't physically
+    // clean rooms on two different pmaps in one mission — they're typically
+    // different floors).
     const regions: Array<{ region_id: string; type: string }> = [];
     const unmappedAreas: number[] = [];
+    const selectedMapIds = new Set<number | undefined>();
     for (const areaId of this.selectedAreas) {
       const room = this.rooms.find((r) => r.areaId === areaId);
       if (!room || !room.regionId) {
@@ -625,6 +551,7 @@ export class RoombaDevice {
         continue;
       }
       regions.push({ region_id: room.regionId, type: room.regionType ?? 'rid' });
+      selectedMapIds.add(room.mapId);
     }
 
     if (unmappedAreas.length > 0) {
@@ -636,10 +563,36 @@ export class RoombaDevice {
       await this.connection.clean();
       return;
     }
-    if (!this.pmapId) {
+
+    // Cross-map check (multi-floor j9+/s9+): if the user picked rooms spanning
+    // two maps we can't satisfy both in one mission. Clean only the map the
+    // first selected room is on and log the skip.
+    if (selectedMapIds.size > 1) {
+      const firstMapId = this.rooms.find((r) => r.areaId === this.selectedAreas[0])?.mapId;
+      this.log.warn(
+        `selectAreas spans multiple maps ${Array.from(selectedMapIds).join(', ')}; ` +
+          `only cleaning rooms on map ${firstMapId}. Move the robot to each map for the remaining rooms separately.`,
+      );
+      // Filter regions down to the first map's rooms.
+      const filteredRegions = this.selectedAreas
+        .map((id) => this.rooms.find((r) => r.areaId === id))
+        .filter((r): r is RoombaRoomConfig => !!r && r.mapId === firstMapId && !!r.regionId)
+        .map((r) => ({ region_id: r.regionId!, type: r.regionType ?? 'rid' }));
+      regions.length = 0;
+      regions.push(...filteredRegions);
+    }
+
+    // Pick the pmapId/userPmapvId for this mission. Look up from the `maps`
+    // array if configured; else fall back to the device-level defaults.
+    const missionMapId = this.rooms.find((r) => r.areaId === this.selectedAreas[0])?.mapId;
+    const activeMap = missionMapId !== undefined ? this.maps.find((m) => m.mapId === missionMapId) : undefined;
+    const missionPmapId = activeMap?.pmapId ?? this.pmapId;
+    const missionUserPmapvId = activeMap?.userPmapvId ?? this.userPmapvId;
+
+    if (!missionPmapId) {
       this.log.warn(
         `selectAreas requested but no pmapId configured for ${this.deviceName} — falling back to whole-home clean. ` +
-          `Add the discovered pmapId/userPmapvId to your device config.`,
+          `Add the discovered pmapId/userPmapvId to your device config (or to the \`maps\` entry for multi-floor setups).`,
       );
       this.setCurrentArea(null);
       await this.connection.clean();
@@ -647,7 +600,7 @@ export class RoombaDevice {
     }
 
     this.log.info(
-      `Starting room-targeted clean for ${regions.length} region(s): ` +
+      `Starting room-targeted clean on pmap ${missionPmapId} for ${regions.length} region(s): ` +
         `${regions.map((r) => r.region_id).join(', ')}`,
     );
     // Snapshot the mission baseline. We cycle currentArea using sqft cleaned
@@ -658,7 +611,7 @@ export class RoombaDevice {
     this.missionStartSqft = startStatus.missionSqft;
     this.missionMaxIndex = 0;
     this.setCurrentArea(this.selectedAreas[0]);
-    await this.connection.cleanRoom(this.pmapId, this.userPmapvId, regions);
+    await this.connection.cleanRoom(missionPmapId, missionUserPmapvId, regions);
   }
 
   /**
