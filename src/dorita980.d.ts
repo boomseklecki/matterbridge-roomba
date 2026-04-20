@@ -92,6 +92,10 @@ declare module 'dorita980' {
     stop(): Promise<void>;
     dock(): Promise<void>;
     find(): Promise<void>;
+    /** Start a "Training Run" mission — robot explores the floor to refine its map. */
+    train(): Promise<void>;
+    /** Trigger the AutoEmpty dock to evacuate the bin (CleanBase models only). */
+    evac(): Promise<void>;
     end(): void;
 
     getRobotState(fields: string[]): Promise<RobotState>;

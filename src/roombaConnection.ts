@@ -536,6 +536,12 @@ export class RoombaConnection extends EventEmitter {
     await this.robot.clean();
   }
 
+  /** Start a mapping / training run (Roomba explores and refines its pmap). */
+  async train(): Promise<void> {
+    if (!this.robot) throw new Error('Not connected');
+    await this.robot.train();
+  }
+
   /**
    * Start a room-targeted clean. `regions` must contain one or more
    * `{ region_id, type }` pairs — the robot rejects the command if any region is

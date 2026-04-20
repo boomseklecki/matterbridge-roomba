@@ -10,6 +10,7 @@ import type { RoombaConnection, RoombaInfo, RoombaStatus, RoombaRoomConfig } fro
 import {
   RUN_MODE_IDLE,
   RUN_MODE_CLEANING,
+  RUN_MODE_MAPPING,
   CLEAN_MODE_VACUUM,
   statusToRunMode,
   statusToOperationalState,
@@ -17,10 +18,13 @@ import {
   batteryToChargeLevel,
 } from './stateMapping.js';
 
-// Run modes: Roomba only supports Idle and Cleaning (no mapping mode)
+// Run modes. `Mapping` triggers a training mission where the robot explores the
+// floor without actually cleaning — used to build/refine the persistent map.
+// Supported on every dorita980-compatible Roomba that has a pmap (j-series, s-series).
 const SUPPORTED_RUN_MODES: RvcRunMode.ModeOption[] = [
   { label: 'Idle', mode: RUN_MODE_IDLE, modeTags: [{ value: RvcRunMode.ModeTag.Idle }] },
   { label: 'Cleaning', mode: RUN_MODE_CLEANING, modeTags: [{ value: RvcRunMode.ModeTag.Cleaning }] },
+  { label: 'Mapping', mode: RUN_MODE_MAPPING, modeTags: [{ value: RvcRunMode.ModeTag.Mapping }] },
 ];
 
 // Clean modes: Roomba is vacuum-only (no mop)
@@ -358,6 +362,9 @@ export class RoombaDevice {
           } else {
             await this.startCleaning();
           }
+        } else if (newMode === RUN_MODE_MAPPING) {
+          this.log.info('Starting mapping / training run');
+          await this.connection.train();
         } else if (newMode === RUN_MODE_IDLE) {
           await this.connection.stop();
         }
@@ -379,6 +386,15 @@ export class RoombaDevice {
         this.log.debug(`Failed to mirror selectedAreas: ${err}`);
       }
     });
+
+    // ServiceArea.SkipArea: not wired up yet. Matterbridge's
+    // `MatterbridgeServiceAreaServer` only forwards `selectAreas` to the plugin
+    // command handler; `skipArea` would need an upstream addition to
+    // CommandHandlerDataMap + the server override. Dorita980 also doesn't expose
+    // a `skip()` method, so the downstream half is missing too. In the meantime,
+    // skip commands from the iRobot app ARE detected via `lastCommand`
+    // observations and flow through `handleRegionsSkipped` → currentArea advance
+    // — which covers the user-facing path today.
 
     // RvcOperationalState: pause, resume, goHome
     this.device.addCommandHandler('pause', async () => {
@@ -614,6 +630,12 @@ export class RoombaDevice {
   } = {};
   /** Tracks whether the robot was running on the previous state update so we can detect the running→idle transition. */
   private wasActive = false;
+  /**
+   * True once we've seen `tankLevel > 0` at least once — proves the robot has a
+   * water tank installed. Without this, we'd spuriously report "Water Tank Empty"
+   * for every vacuum-only model (whose tankLvl just never gets set).
+   */
+  private robotHasSeenTank = false;
 
   /**
    * Push current Roomba state to the Matter device attributes, skipping writes whose
@@ -634,9 +656,28 @@ export class RoombaDevice {
         this.lastPushed.opState = opState;
       }
 
-      const errorState = errorCodeToMatterError(status.errorCode);
+      // Roomba reports bin-full and tank-empty as separate booleans from the
+      // numeric errorCode — fold both into the error struct so Apple Home / HA
+      // can surface them via the standard RvcOperationalState error notification.
+      const errorState = errorCodeToMatterError(status.errorCode, {
+        binFull: status.binFull,
+        // Only treat tankLvl=0 as "tank empty" on models that have a tank at all
+        // (mop-equipped). tankLevel > 0 at least once in a mission proves it.
+        tankEmpty: this.robotHasSeenTank && status.tankLevel === 0,
+      });
+      if (status.tankLevel > 0) this.robotHasSeenTank = true;
       if (errorState.errorStateId !== this.lastPushed.errorStateId) {
         this.device.setAttribute('rvcOperationalState', 'operationalError', errorState, this.log);
+        // Also fire the Matter event so event-based subscribers (Apple Home
+        // notifications, HA automations) get a push for the transition.
+        if (errorState.errorStateId !== RvcOperationalState.ErrorState.NoError) {
+          this.device
+            .triggerEvent('rvcOperationalState', 'operationalError', errorState, this.log)
+            .catch((err) => this.log.debug(`triggerEvent operationalError failed: ${err}`));
+          this.log.info(
+            `Robot error transition: id=${errorState.errorStateId} (Roomba errorCode=${status.errorCode}, binFull=${status.binFull}, tankLevel=${status.tankLevel})`,
+          );
+        }
         this.lastPushed.errorStateId = errorState.errorStateId;
       }
 
