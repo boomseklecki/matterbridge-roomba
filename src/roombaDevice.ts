@@ -181,6 +181,7 @@ export class RoombaDevice {
   private missionMaxIndex = 0;
 
   private readonly family: RoombaFamily;
+  private readonly iosAllRoomsWorkaround: boolean;
   /** Most recent RvcCleanMode the controller asked for. Checked at startCleaning time. */
   private pendingCleanMode: number | undefined;
 
@@ -197,7 +198,9 @@ export class RoombaDevice {
     family: RoombaFamily = 'unknown',
     maps: RoombaMapConfig[] | undefined = undefined,
     cleanCapabilities: CleanModeCapabilities = { multiPass: false, carpetBoost: false },
+    iosAllRoomsWorkaround = true,
   ) {
+    this.iosAllRoomsWorkaround = iosAllRoomsWorkaround;
     this.serverMode = serverMode;
     this.rooms = rooms ?? [];
     this.maps = maps ?? [];
@@ -456,10 +459,11 @@ export class RoombaDevice {
       const newAreas = (request.newAreas ?? []) as number[];
       this.selectedAreas = [...newAreas];
       this.log.info(`selectAreas requested: [${newAreas.join(', ')}]`);
-      const mirrorValue =
-        newAreas.length === 0 && this.rooms.length > 0
-          ? this.rooms.map((r) => r.areaId)
-          : this.selectedAreas;
+      const useWorkaround =
+        this.iosAllRoomsWorkaround && newAreas.length === 0 && this.rooms.length > 0;
+      const mirrorValue = useWorkaround
+        ? this.rooms.map((r) => r.areaId)
+        : this.selectedAreas;
       try {
         this.device.setAttribute('serviceArea', 'selectedAreas', mirrorValue, this.log);
       } catch (err) {

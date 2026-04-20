@@ -226,6 +226,7 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
       family,
       deviceConfig.maps,
       cleanCapabilities,
+      deviceConfig.iosAllRoomsWorkaround ?? true,
     );
     this.roombaDevices.set(blid, roombaDevice);
     this.log.info(

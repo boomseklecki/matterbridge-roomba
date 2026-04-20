@@ -130,6 +130,11 @@
             "type": "boolean",
             "default": false
           },
+          "iosAllRoomsWorkaround": {
+            "description": "Work around an iOS Home UI bug: picking 'All Rooms' leaves the picker checkboxes showing only the first room until the subscription update lands. When ON (default), the plugin mirrors the full room list back to the SelectedAreas attribute so iOS Home's display matches intent within a few seconds. NOTE: this technically violates Matter spec §1.17.6.4 (SelectedAreas should only be updated via the SelectAreas command). Turn OFF once Apple fixes the iOS Home bug, or if you're on macOS Home only (which handles the spec-compliant empty-list semantic correctly without help).",
+            "type": "boolean",
+            "default": true
+          },
           "pmapId": {
             "description": "Persistent map identifier (auto-discovered). Required for room-targeted cleans on single-map setups. For multi-floor homes use the maps array instead.",
             "type": "string"

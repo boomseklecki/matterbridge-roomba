@@ -133,6 +133,24 @@ export interface RoombaDeviceConfig {
    * state fields the plugin doesn't yet parse.
    */
   verboseState?: boolean;
+  /**
+   * Work around iOS Home's room-picker UI regression where picking "All Rooms"
+   * (which Matter represents as `selectAreas([])`, an unconstrained mission)
+   * leaves the picker checkboxes displaying only the first configured room.
+   *
+   * When enabled (default), the plugin echoes the FULL list of configured
+   * areaIds back to the `SelectedAreas` attribute whenever the controller
+   * sends an empty `selectAreas` command — so iOS Home's summary flip to
+   * "All Rooms" after a few seconds. macOS Home handles the empty-list
+   * semantic correctly and doesn't need this.
+   *
+   * This mildly violates Matter spec §1.17.6.4 ("SelectedAreas shall NOT be
+   * updated outside of processing a SelectAreas command") — the two
+   * representations are functionally identical for a Roomba, but a strict
+   * controller could theoretically differentiate them. Disable this once
+   * Apple ships a fix in iOS Home.
+   */
+  iosAllRoomsWorkaround?: boolean;
 }
 
 export interface DiscoveredRegion {
