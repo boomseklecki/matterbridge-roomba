@@ -1,15 +1,39 @@
 {
   "name": "matterbridge-roomba",
-  "version": "1.0.2",
-  "description": "Matterbridge plugin for iRobot Roomba robotic vacuum cleaners",
+  "version": "1.1.0",
+  "description": "Matterbridge plugin that exposes iRobot Roomba vacuum cleaners as Matter devices (local MQTT via dorita980). Supports room-targeted cleans, cloud-assisted onboarding, and standalone Matter commissioning.",
   "author": "Rashed97",
   "license": "Apache-2.0",
+  "keywords": [
+    "matter",
+    "matterbridge",
+    "matterbridge-plugin",
+    "roomba",
+    "irobot",
+    "vacuum",
+    "robotic-vacuum",
+    "rvc",
+    "homekit",
+    "apple-home",
+    "google-home",
+    "smarthome",
+    "dorita980"
+  ],
   "type": "module",
   "main": "./dist/module.js",
   "types": "./dist/module.d.ts",
+  "files": [
+    "dist/",
+    "matterbridge-roomba.schema.json",
+    "matterbridge-roomba.config.json",
+    "README.md",
+    "ONBOARDING.md",
+    "LICENSE"
+  ],
+  "homepage": "https://github.com/Rashed97/matterbridge-roomba#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Rashed97/matterbridge-roomba.git"
+    "url": "git+https://github.com/Rashed97/matterbridge-roomba.git"
   },
   "bugs": {
     "url": "https://github.com/Rashed97/matterbridge-roomba/issues"
@@ -23,7 +47,10 @@
     "clean": "rm -rf dist",
     "start": "tsc && matterbridge -childbridge",
     "dev:link": "npm link matterbridge",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "dependencies": {
     "dorita980": "npm:@karlvr/dorita980@^3.2.1"
@@ -31,6 +58,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "eslint": "^9.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^2.0.0"
   }
 }

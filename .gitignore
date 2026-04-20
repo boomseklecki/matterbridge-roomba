@@ -3,4 +3,5 @@ dist/
 *.tsbuildinfo
 .DS_Store
 .claude/
-package-lock.json
+coverage/
+*.tgz

@@ -66,7 +66,12 @@ declare module 'dorita980' {
     on(event: string, listener: (...args: unknown[]) => void): this;
 
     clean(): Promise<void>;
-    cleanRoom(args: unknown): Promise<void>;
+    cleanRoom(args: {
+      ordered: number;
+      pmap_id: string;
+      user_pmapv_id?: string;
+      regions: Array<{ region_id: string; type: string; params?: Record<string, unknown> }>;
+    }): Promise<void>;
     pause(): Promise<void>;
     resume(): Promise<void>;
     stop(): Promise<void>;

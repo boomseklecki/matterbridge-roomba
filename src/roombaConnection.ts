@@ -10,8 +10,21 @@ const ROBOT_CIPHERS = ['AES128-SHA256', 'TLS_AES_256_GCM_SHA384'];
 const CONNECT_TIMEOUT_MS = 30_000;
 
 export interface RoombaRoomConfig {
-  /** Matter area ID (1-4095). Matched against the robot's region IDs for selectAreas. */
+  /** Matter area ID (uint32). Must be unique per device. Presented to controllers. */
   areaId: number;
+  /**
+   * Roomba's internal region identifier, as reported by the robot in
+   * `lastCommand.regions[*].region_id`. Required for room-targeted cleans to work —
+   * the plugin translates the Matter areaId back to this string before sending the
+   * `cleanRoom` command. If omitted, room-targeted cleans for this area fall back
+   * to a whole-home clean.
+   */
+  regionId?: string;
+  /**
+   * Region type for the robot: `"rid"` for rooms (default), `"zid"` for zones.
+   * Pulled from `lastCommand.regions[*].type` during discovery.
+   */
+  regionType?: string;
   /** User-facing room name shown in the Matter controller. */
   name: string;
   /**
@@ -30,6 +43,8 @@ export interface RoombaDeviceConfig {
   ipAddress: string;
   refreshInterval?: number;
   idleRefreshInterval?: number;
+  /** Marker set during platform startup when this device's creds came from cloud lookup. */
+  _resolvedFromCloud?: boolean;
   /** Model name override for the Matter BasicInformation cluster (e.g. "Roomba j5+"). */
   model?: string;
   /** Vendor name override (default "iRobot"). */
@@ -49,6 +64,17 @@ export interface RoombaDeviceConfig {
   serverMode?: boolean;
   /** Optional list of rooms to expose as Matter service areas. */
   rooms?: RoombaRoomConfig[];
+  /**
+   * Persistent map identifier for this robot's active map (`pmap_id` from the
+   * robot's `lastCommand`). Required for room-targeted cleans. Auto-captured in
+   * discovery mode; user pastes into config alongside `rooms`.
+   */
+  pmapId?: string;
+  /**
+   * User's version identifier for the active map (`user_pmapv_id`). Required by
+   * the `cleanRoom` command alongside `pmapId`. Auto-captured in discovery mode.
+   */
+  userPmapvId?: string;
   /**
    * When true, every time the robot reports a room-based clean command, the plugin
    * logs a copy-paste-ready JSON snippet with the captured region IDs. Turn on,
@@ -404,6 +430,29 @@ export class RoombaConnection extends EventEmitter {
   async clean(): Promise<void> {
     if (!this.robot) throw new Error('Not connected');
     await this.robot.clean();
+  }
+
+  /**
+   * Start a room-targeted clean. `regions` must contain one or more
+   * `{ region_id, type }` pairs — the robot rejects the command if any region is
+   * not present in its active pmap. `pmapId` + `userPmapvId` identify which map
+   * version those regions belong to.
+   */
+  async cleanRoom(
+    pmapId: string,
+    userPmapvId: string | undefined,
+    regions: Array<{ region_id: string; type: string }>,
+  ): Promise<void> {
+    if (!this.robot) throw new Error('Not connected');
+    if (regions.length === 0) {
+      throw new Error('cleanRoom called with no regions; falling back to full clean is the caller\u2019s responsibility');
+    }
+    await this.robot.cleanRoom({
+      ordered: 1,
+      pmap_id: pmapId,
+      user_pmapv_id: userPmapvId,
+      regions,
+    });
   }
 
   async pause(): Promise<void> {

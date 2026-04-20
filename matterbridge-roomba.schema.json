@@ -23,6 +23,41 @@
       "type": "boolean",
       "default": false
     },
+    "testCloudLogin": {
+      "title": "Test cloud login",
+      "description": "Click to verify the iRobot account credentials above and list the robots on the account. Results appear in the Matterbridge logs.",
+      "type": "string",
+      "ui:widget": "action"
+    },
+    "applyDiscoveredRooms": {
+      "title": "Save discovered rooms to config",
+      "description": "After running discovery mode and cleaning each room from the iRobot app, click this to snapshot the captured regions into each device's rooms/pmapId/userPmapvId. Room names come out as 'Room <id>' — edit them afterwards in the Devices section.",
+      "type": "string",
+      "ui:widget": "action"
+    },
+    "cloud": {
+      "description": "Optional iRobot account credentials. When set, the plugin auto-fetches each robot's BLID and local MQTT password so you don't need to extract them manually. Only used at startup — stored credentials are not revalidated thereafter.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "description": "iRobot account email address.",
+          "type": "string",
+          "format": "email"
+        },
+        "password": {
+          "description": "iRobot account password.",
+          "type": "string",
+          "format": "password"
+        },
+        "countryCode": {
+          "description": "Two-letter ISO country code for the iRobot cloud discovery endpoint (e.g. US, DE, JP). Defaults to US; Gigya federates so it usually doesn't matter.",
+          "type": "string",
+          "default": "US",
+          "minLength": 2,
+          "maxLength": 2
+        }
+      }
+    },
     "devices": {
       "description": "List of Roomba devices to connect to",
       "type": "array",
@@ -34,15 +69,16 @@
             "type": "string"
           },
           "blid": {
-            "description": "Robot BLID (unique identifier). Found via 'get-roomba-password' or iRobot cloud.",
+            "description": "Robot BLID (unique identifier). Auto-filled when the top-level cloud.email/password are set. Otherwise find it via 'get-roomba-password' or the iRobot app.",
             "type": "string"
           },
           "password": {
-            "description": "Robot password for local MQTT connection",
-            "type": "string"
+            "description": "Robot's LOCAL MQTT password (not your iRobot account password). Auto-filled when cloud credentials are set.",
+            "type": "string",
+            "format": "password"
           },
           "ipAddress": {
-            "description": "Robot IP address on your local network",
+            "description": "Robot IP address on your local network. Must be supplied manually — cloud lookup does not return it.",
             "type": "string"
           },
           "refreshInterval": {
@@ -74,27 +110,44 @@
             "type": "string"
           },
           "discoverRooms": {
-            "description": "When true, the plugin logs a copy-paste-ready 'rooms' snippet whenever a room-based clean command is observed. See ONBOARDING.md for the step-by-step flow. Turn off after you have filled in 'rooms'.",
+            "description": "When true, the plugin logs a copy-paste-ready config block whenever a room-based clean command is observed. See ONBOARDING.md for the step-by-step flow. Turn off after you have filled in rooms/pmapId/userPmapvId.",
             "type": "boolean",
             "default": false
           },
+          "pmapId": {
+            "description": "Persistent map identifier (auto-discovered). Required for room-targeted cleans.",
+            "type": "string"
+          },
+          "userPmapvId": {
+            "description": "User map version identifier (auto-discovered). Required for room-targeted cleans.",
+            "type": "string"
+          },
           "rooms": {
-            "description": "Rooms/areas to expose as Matter service areas. Leave empty to hide the rooms selector.",
+            "description": "Rooms/areas to expose as Matter service areas. Populated automatically by discovery mode. Leave empty to hide the rooms selector.",
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "areaId": {
-                  "description": "Numeric area ID exposed via Matter (should match your robot's region IDs if you want selectAreas to work end-to-end)",
+                  "description": "Stable Matter area identifier presented to controllers (uint32). Generated from the robot's regionId by discovery mode.",
                   "type": "integer",
-                  "minimum": 1
+                  "minimum": 0
+                },
+                "regionId": {
+                  "description": "Robot-internal region identifier (auto-discovered). Used to translate Matter selectAreas requests back to dorita980 cleanRoom calls.",
+                  "type": "string"
+                },
+                "regionType": {
+                  "description": "Region type reported by the robot (rid=room, zid=zone). Auto-discovered; defaults to rid.",
+                  "type": "string",
+                  "default": "rid"
                 },
                 "name": {
-                  "description": "Display name for the room",
+                  "description": "Display name for the room shown in your Matter controller",
                   "type": "string"
                 },
                 "type": {
-                  "description": "Semantic room type (e.g. LivingRoom, Kitchen, Bedroom, Bathroom, Office)",
+                  "description": "Semantic room type — maps to a Matter AreaNamespaceTag so controllers can pick an icon. Examples: LivingRoom, Kitchen, Bedroom, Bathroom, Office, Hallway, Dining, Laundry, Garage, PrimaryBedroom, GuestBedroom",
                   "type": "string"
                 },
                 "floor": {
@@ -107,9 +160,9 @@
             }
           }
         },
-        "required": ["blid", "password", "ipAddress"]
+        "required": ["ipAddress"]
       }
     }
   },
-  "required": ["name", "type", "devices"]
+  "required": ["name", "type"]
 }

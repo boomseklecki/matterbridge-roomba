@@ -131,6 +131,11 @@ export class RoombaDevice {
   private readonly deviceName: string;
   private readonly serialNumber: string;
   private readonly serverMode: boolean;
+  private readonly rooms: RoombaRoomConfig[];
+  private readonly pmapId: string | undefined;
+  private readonly userPmapvId: string | undefined;
+  /** Matter areaIds currently selected by the controller (from `selectAreas`). */
+  private selectedAreas: number[] = [];
 
   constructor(
     private readonly connection: RoombaConnection,
@@ -138,8 +143,13 @@ export class RoombaDevice {
     serialNumber: string,
     rooms: RoombaRoomConfig[] | undefined,
     serverMode: boolean,
+    pmapId?: string,
+    userPmapvId?: string,
   ) {
     this.serverMode = serverMode;
+    this.rooms = rooms ?? [];
+    this.pmapId = pmapId;
+    this.userPmapvId = userPmapvId;
     this.deviceName = connection.getDeviceName();
     this.serialNumber = serialNumber;
 
@@ -316,7 +326,11 @@ export class RoombaDevice {
       }
     });
 
-    // RvcRunMode: change run mode (start/stop cleaning)
+    // RvcRunMode: change run mode (start/stop cleaning).
+    // If the controller has called `selectAreas` with one or more rooms, start a
+    // room-targeted clean via the dorita980 `cleanRoom` command — otherwise a whole-home
+    // clean. Roomba requires pmapId + userPmapvId for room cleans; if those aren't in
+    // the config the room path degrades to a whole-home clean with a log warning.
     this.device.addCommandHandler('changeToMode', async ({ request }) => {
       const newMode = request.newMode;
       this.log.info(`changeToMode requested: ${newMode}`);
@@ -326,13 +340,27 @@ export class RoombaDevice {
           if (status.paused) {
             await this.connection.resume();
           } else {
-            await this.connection.clean();
+            await this.startCleaning();
           }
         } else if (newMode === RUN_MODE_IDLE) {
           await this.connection.stop();
         }
       } catch (err) {
         this.log.warn(`Failed to change run mode: ${err}`);
+      }
+    });
+
+    // ServiceArea: record which rooms the controller wants cleaned. The actual
+    // clean command is sent once the controller transitions RvcRunMode to Cleaning.
+    this.device.addCommandHandler('selectAreas', async ({ request }) => {
+      const newAreas = (request.newAreas ?? []) as number[];
+      this.selectedAreas = [...newAreas];
+      this.log.info(`selectAreas requested: [${newAreas.join(', ')}]`);
+      // Also mirror into the cluster attribute so controllers can read it back.
+      try {
+        this.device.setAttribute('serviceArea', 'selectedAreas', this.selectedAreas, this.log);
+      } catch (err) {
+        this.log.debug(`Failed to mirror selectedAreas: ${err}`);
       }
     });
 
@@ -365,6 +393,52 @@ export class RoombaDevice {
     });
   }
 
+  /**
+   * Decide between a whole-home and a room-targeted clean based on the current
+   * `selectedAreas`. Called when the controller transitions RvcRunMode -> Cleaning.
+   */
+  private async startCleaning(): Promise<void> {
+    if (this.selectedAreas.length === 0) {
+      await this.connection.clean();
+      return;
+    }
+
+    // Resolve Matter areaIds back to Roomba region metadata.
+    const regions: Array<{ region_id: string; type: string }> = [];
+    const unmappedAreas: number[] = [];
+    for (const areaId of this.selectedAreas) {
+      const room = this.rooms.find((r) => r.areaId === areaId);
+      if (!room || !room.regionId) {
+        unmappedAreas.push(areaId);
+        continue;
+      }
+      regions.push({ region_id: room.regionId, type: room.regionType ?? 'rid' });
+    }
+
+    if (unmappedAreas.length > 0) {
+      this.log.warn(
+        `selectAreas referenced Matter areaId(s) [${unmappedAreas.join(', ')}] that have no regionId in config — ` +
+          `falling back to whole-home clean. Run discovery mode to capture regionIds and add them to rooms[].`,
+      );
+      await this.connection.clean();
+      return;
+    }
+    if (!this.pmapId) {
+      this.log.warn(
+        `selectAreas requested but no pmapId configured for ${this.deviceName} — falling back to whole-home clean. ` +
+          `Add the discovered pmapId/userPmapvId to your device config.`,
+      );
+      await this.connection.clean();
+      return;
+    }
+
+    this.log.info(
+      `Starting room-targeted clean for ${regions.length} region(s): ` +
+        `${regions.map((r) => r.region_id).join(', ')}`,
+    );
+    await this.connection.cleanRoom(this.pmapId, this.userPmapvId, regions);
+  }
+
   private listenForStateUpdates(): void {
     this.connection.on('stateUpdate', (status: RoombaStatus) => {
       this.updateMatterState(status);
@@ -380,33 +454,67 @@ export class RoombaDevice {
   }
 
   /**
-   * Push current Roomba state to the Matter device attributes.
+   * Cache of last-pushed attribute values so we only call setAttribute when something
+   * actually changed. Roomba state messages arrive every ~2s during active cleaning,
+   * and matterbridge logs every setAttribute — without a diff here, the log gets
+   * spammed with "from X to X" noise.
+   */
+  private lastPushed: {
+    runMode?: number;
+    opState?: number;
+    errorStateId?: number;
+    batteryPct?: number;
+    batChargeLevel?: number;
+    batChargeState?: number;
+  } = {};
+
+  /**
+   * Push current Roomba state to the Matter device attributes, skipping writes whose
+   * value hasn't changed since the previous push.
    */
   updateMatterState(status: RoombaStatus): void {
     if (!this.endpointActive) return;
     try {
-      // Update RvcRunMode
       const runMode = statusToRunMode(status);
-      this.device.setAttribute('rvcRunMode', 'currentMode', runMode, this.log);
+      if (runMode !== this.lastPushed.runMode) {
+        this.device.setAttribute('rvcRunMode', 'currentMode', runMode, this.log);
+        this.lastPushed.runMode = runMode;
+      }
 
-      // Update RvcOperationalState
       const opState = statusToOperationalState(status);
-      this.device.setAttribute('rvcOperationalState', 'operationalState', opState, this.log);
+      if (opState !== this.lastPushed.opState) {
+        this.device.setAttribute('rvcOperationalState', 'operationalState', opState, this.log);
+        this.lastPushed.opState = opState;
+      }
 
-      // Update error state
       const errorState = errorCodeToMatterError(status.errorCode);
-      this.device.setAttribute('rvcOperationalState', 'operationalError', errorState, this.log);
+      if (errorState.errorStateId !== this.lastPushed.errorStateId) {
+        this.device.setAttribute('rvcOperationalState', 'operationalError', errorState, this.log);
+        this.lastPushed.errorStateId = errorState.errorStateId;
+      }
 
-      // Update battery (Matter spec: batPercentRemaining is 0-200, representing 0-100% in 0.5% steps)
-      this.device.setAttribute('powerSource', 'batPercentRemaining', Math.min(status.batteryLevel * 2, 200), this.log);
-      this.device.setAttribute('powerSource', 'batChargeLevel', batteryToChargeLevel(status.batteryLevel), this.log);
+      // Matter spec: batPercentRemaining is 0-200, representing 0-100% in 0.5% steps
+      const batteryPct = Math.min(status.batteryLevel * 2, 200);
+      if (batteryPct !== this.lastPushed.batteryPct) {
+        this.device.setAttribute('powerSource', 'batPercentRemaining', batteryPct, this.log);
+        this.lastPushed.batteryPct = batteryPct;
+      }
+
+      const chargeLevel = batteryToChargeLevel(status.batteryLevel);
+      if (chargeLevel !== this.lastPushed.batChargeLevel) {
+        this.device.setAttribute('powerSource', 'batChargeLevel', chargeLevel, this.log);
+        this.lastPushed.batChargeLevel = chargeLevel;
+      }
 
       // Charge state: 0 = Unknown, 1 = IsCharging, 2 = IsAtFullCharge, 3 = IsNotCharging
-      let chargeState = 3; // IsNotCharging
+      let chargeState = 3;
       if (status.charging) {
         chargeState = status.batteryLevel >= 100 ? 2 : 1;
       }
-      this.device.setAttribute('powerSource', 'batChargeState', chargeState, this.log);
+      if (chargeState !== this.lastPushed.batChargeState) {
+        this.device.setAttribute('powerSource', 'batChargeState', chargeState, this.log);
+        this.lastPushed.batChargeState = chargeState;
+      }
     } catch (err) {
       this.log.debug(`Error updating Matter state: ${err}`);
     }

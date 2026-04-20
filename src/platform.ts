@@ -9,6 +9,9 @@ import {
 } from 'matterbridge';
 import type { AnsiLogger } from 'matterbridge/logger';
 import { RoombaConnection, type DiscoveredMap, type RoombaDeviceConfig } from './roombaConnection.js';
+import { RoombaDevice } from './roombaDevice.js';
+import { getRoombaCloudCredentials, RoombaCloudError } from './roombaCloud.js';
+import { toAreaId, withTimeout } from './utils.js';
 
 interface RoomsInMissionPayload {
   pmapId: string;
@@ -19,10 +22,24 @@ interface RoomsInMissionPayload {
   newRegionIds: string[];
   time?: number;
 }
-import { RoombaDevice } from './roombaDevice.js';
+
+interface CloudCredentials {
+  /** iRobot account email. */
+  email: string;
+  /** iRobot account password (NOT the robot's local password). */
+  password: string;
+  /** Two-letter ISO country code; defaults to "US". */
+  countryCode?: string;
+}
 
 interface RoombaPlatformConfig extends PlatformConfig {
   devices?: RoombaDeviceConfig[];
+  /**
+   * Optional cloud login. When set, any device whose `blid`/`password` are empty or
+   * missing will have them auto-filled from the cloud account at startup.
+   * Other device-level fields (ipAddress, rooms, pmapId, etc.) are left untouched.
+   */
+  cloud?: CloudCredentials;
 }
 
 export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
@@ -41,18 +58,108 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
   override async onStart(reason?: string): Promise<void> {
     this.log.info(`Starting Roomba plugin (reason: ${reason ?? 'unknown'})`);
 
-    const devices = this.platformConfig.devices ?? [];
-    if (devices.length === 0) {
-      this.log.warn('No Roomba devices configured. Add devices in the plugin settings.');
+    const devices = [...(this.platformConfig.devices ?? [])];
+    if (devices.length === 0 && !this.platformConfig.cloud) {
+      this.log.warn(
+        'No Roomba devices configured. Add a device under "devices" or supply cloud credentials to auto-discover them.',
+      );
       return;
     }
 
+    // Resolve cloud-sourced credentials in place — fills blid/password/name/model for
+    // devices where they're missing, and can auto-add all cloud robots if `devices` is empty.
+    await this.resolveCloudCredentials(devices);
+
     for (const deviceConfig of devices) {
+      if (!deviceConfig.blid || !deviceConfig.password) {
+        this.log.error(
+          `Device "${deviceConfig.name ?? '(unnamed)'}" is missing blid/password and cloud lookup did not resolve them. Skipping.`,
+        );
+        continue;
+      }
+      if (!deviceConfig.ipAddress) {
+        this.log.error(
+          `Device "${deviceConfig.name ?? deviceConfig.blid}" is missing ipAddress. Configure the robot's LAN IP. Skipping.`,
+        );
+        continue;
+      }
       try {
         await this.setupDevice(deviceConfig);
       } catch (err) {
         this.log.error(`Failed to set up Roomba ${deviceConfig.blid}: ${err}`);
       }
+    }
+  }
+
+  /**
+   * If `cloud.email` + `cloud.password` are set, call the iRobot cloud API to fetch
+   * all robots on the account. Any device in config that's missing blid/password has
+   * those fields filled in from the cloud record with the matching name (or the sole
+   * robot on a single-robot account). If `devices` is empty entirely, every cloud
+   * robot is auto-added with a placeholder config (user still supplies ipAddress).
+   *
+   * Mutates `devices` in place.
+   */
+  private async resolveCloudCredentials(devices: RoombaDeviceConfig[]): Promise<void> {
+    const cloud = this.platformConfig.cloud;
+    if (!cloud?.email || !cloud?.password) return;
+
+    const needsLookup = devices.some((d) => !d.blid || !d.password) || devices.length === 0;
+    if (!needsLookup) return;
+
+    this.log.info(`Fetching iRobot cloud credentials for ${cloud.email}…`);
+    let cloudRobots;
+    try {
+      cloudRobots = await getRoombaCloudCredentials({
+        email: cloud.email,
+        password: cloud.password,
+        countryCode: cloud.countryCode,
+      });
+    } catch (err) {
+      if (err instanceof RoombaCloudError) {
+        this.log.error(`iRobot cloud lookup failed (${err.kind}): ${err.message}`);
+      } else {
+        this.log.error(`iRobot cloud lookup failed: ${err}`);
+      }
+      return;
+    }
+    this.log.info(`Cloud returned ${cloudRobots.length} robot(s) on this account.`);
+
+    // Auto-add robots that aren't in the devices list (by blid match on name).
+    if (devices.length === 0) {
+      for (const robot of cloudRobots) {
+        this.log.warn(
+          `Robot "${robot.name}" (blid ${robot.blid}) was auto-added from cloud. Set its ipAddress in the config before it can connect.`,
+        );
+        devices.push({
+          name: robot.name,
+          blid: robot.blid,
+          password: robot.password,
+          ipAddress: '',
+          model: robot.sku,
+          _resolvedFromCloud: true,
+        });
+      }
+      return;
+    }
+
+    // Fill missing creds on existing device entries by matching on name (case-insensitive).
+    for (const device of devices) {
+      if (device.blid && device.password) continue;
+      const match =
+        cloudRobots.find((r) => r.name.toLowerCase() === (device.name ?? '').toLowerCase()) ??
+        (cloudRobots.length === 1 ? cloudRobots[0] : undefined);
+      if (!match) {
+        this.log.warn(
+          `Could not find a cloud robot matching "${device.name}". Known cloud robots: ${cloudRobots.map((r) => r.name).join(', ') || '(none)'}.`,
+        );
+        continue;
+      }
+      device.blid = device.blid || match.blid;
+      device.password = device.password || match.password;
+      if (!device.model) device.model = match.sku;
+      device._resolvedFromCloud = true;
+      this.log.info(`Resolved cloud credentials for "${device.name ?? match.name}" (blid ${match.blid}).`);
     }
   }
 
@@ -67,7 +174,15 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     // Default to server mode ('server') — Apple Home / Google Home handle standalone RVC
     // better than bridged RVC. Users can set serverMode:false to fold it into the bridge.
     const serverMode = deviceConfig.serverMode ?? true;
-    const roombaDevice = new RoombaDevice(connection, this.log, blid, deviceConfig.rooms, serverMode);
+    const roombaDevice = new RoombaDevice(
+      connection,
+      this.log,
+      blid,
+      deviceConfig.rooms,
+      serverMode,
+      deviceConfig.pmapId,
+      deviceConfig.userPmapvId,
+    );
     this.roombaDevices.set(blid, roombaDevice);
     this.log.info(
       `[${deviceConfig.name ?? blid}] Exposing robot in ${serverMode ? 'server (standalone Matter device)' : 'bridged (under Matterbridge aggregator)'} mode`,
@@ -144,21 +259,25 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
   private logDiscoveredRooms(deviceLabel: string, maps: DiscoveredMap[]): void {
     for (const map of maps) {
       const lines: string[] = [];
-      lines.push(`[${deviceLabel}] Discovered ${map.regions.length} room(s) on map ${map.pmapId}:`);
+      lines.push(
+        `[${deviceLabel}] Discovered ${map.regions.length} room(s) on map ${map.pmapId}. ` +
+          `Paste the block below into this device's config (under "devices[].") and rename each room:`,
+      );
+      lines.push(`  "pmapId": ${JSON.stringify(map.pmapId)},`);
+      if (map.userPmapvId) {
+        lines.push(`  "userPmapvId": ${JSON.stringify(map.userPmapvId)},`);
+      }
       lines.push(`  "rooms": [`);
       map.regions.forEach((region, i) => {
         const comma = i === map.regions.length - 1 ? '' : ',';
-        // Roomba region IDs are strings — usually "1", "2", etc. but not guaranteed.
-        // Matter's areaId is uint32, so numeric-parse when possible, else hash.
         const areaId = toAreaId(region.regionId);
         lines.push(
-          `    { "areaId": ${areaId}, "name": "Room ${region.regionId} (rename me)", "type": null }${comma}`,
+          `    { "areaId": ${areaId}, "regionId": ${JSON.stringify(region.regionId)}, ` +
+            `"regionType": ${JSON.stringify(region.type)}, ` +
+            `"name": "Room ${region.regionId} (rename me)", "type": null }${comma}`,
         );
       });
       lines.push(`  ]`);
-      lines.push(
-        `  pmapId=${map.pmapId}${map.userPmapvId ? ` userPmapvId=${map.userPmapvId}` : ''}`,
-      );
       this.log.info(lines.join('\n'));
     }
   }
@@ -186,6 +305,121 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
         if (config) {
           this.scheduleReconnect(blid, config);
         }
+      }
+    }
+  }
+
+  /**
+   * Frontend action buttons. Matterbridge invokes this when the user clicks a
+   * `"ui:widget": "action"` / `"actionText"` field in the plugin config UI.
+   */
+  override async onAction(action: string, value?: string, id?: string, formData?: PlatformConfig): Promise<void> {
+    this.log.info(`Action "${action}" received from frontend${value ? ` with value="${value}"` : ''}`);
+    switch (action) {
+      case 'testCloudLogin':
+        await this.runTestCloudLogin();
+        break;
+      case 'applyDiscoveredRooms':
+        await this.runApplyDiscoveredRooms();
+        break;
+      default:
+        this.log.warn(`Unknown action "${action}"`);
+    }
+    // Silence the unused-arg lint; value/id/formData aren't needed for these actions.
+    void value;
+    void id;
+    void formData;
+  }
+
+  /** Hit the cloud API with the configured credentials and log what we find. */
+  private async runTestCloudLogin(): Promise<void> {
+    const cloud = this.platformConfig.cloud;
+    if (!cloud?.email || !cloud?.password) {
+      this.log.error('Test cloud login: no cloud.email/cloud.password set.');
+      return;
+    }
+    try {
+      const robots = await getRoombaCloudCredentials({
+        email: cloud.email,
+        password: cloud.password,
+        countryCode: cloud.countryCode,
+      });
+      if (robots.length === 0) {
+        this.log.warn('Cloud login OK, but the account has no paired robots.');
+        return;
+      }
+      this.log.info(`Cloud login OK. ${robots.length} robot(s) found:`);
+      for (const r of robots) {
+        this.log.info(`  - ${r.name}: blid=${r.blid} sku=${r.sku} softwareVer=${r.softwareVer}`);
+      }
+    } catch (err) {
+      if (err instanceof RoombaCloudError) {
+        this.log.error(`Cloud login failed (${err.kind}): ${err.message}`);
+      } else {
+        this.log.error(`Cloud login failed: ${err}`);
+      }
+    }
+  }
+
+  /**
+   * Pull currently-accumulated room discoveries out of each connection's in-memory
+   * cache, merge them into the device configs (preserving user-renamed rooms), and
+   * persist via `saveConfig`. The user then only needs to rename the rooms they
+   * care about — nothing else to edit.
+   */
+  private async runApplyDiscoveredRooms(): Promise<void> {
+    const devices = this.platformConfig.devices ?? [];
+    if (devices.length === 0) {
+      this.log.warn('Apply discovered rooms: no devices configured.');
+      return;
+    }
+
+    let updatedAny = false;
+    for (const deviceConfig of devices) {
+      const connection = this.connections.get(deviceConfig.blid);
+      if (!connection) continue;
+      const maps = connection.getDiscoveredMaps();
+      if (maps.length === 0) {
+        this.log.info(
+          `[${deviceConfig.name ?? deviceConfig.blid}] No rooms discovered yet. ` +
+            `Turn on discoverRooms, clean each room once from the iRobot app, then click this again.`,
+        );
+        continue;
+      }
+
+      // Prefer the pmap we've seen the most regions on — handles robots that still
+      // remember an older retired map.
+      const primary = maps.slice().sort((a, b) => b.regions.length - a.regions.length)[0];
+      deviceConfig.pmapId = primary.pmapId;
+      if (primary.userPmapvId) deviceConfig.userPmapvId = primary.userPmapvId;
+
+      const existingByAreaId = new Map((deviceConfig.rooms ?? []).map((r) => [r.areaId, r]));
+      deviceConfig.rooms = primary.regions.map((region) => {
+        const areaId = toAreaId(region.regionId);
+        const existing = existingByAreaId.get(areaId);
+        return {
+          areaId,
+          regionId: region.regionId,
+          regionType: region.type,
+          name: existing?.name ?? `Room ${region.regionId}`,
+          type: existing?.type,
+          floor: existing?.floor,
+        };
+      });
+      const newRooms = deviceConfig.rooms;
+      updatedAny = true;
+      this.log.info(
+        `[${deviceConfig.name ?? deviceConfig.blid}] Saved ${newRooms.length} room(s) from map ${primary.pmapId}. ` +
+          `Rename them in the config UI, then restart the plugin.`,
+      );
+    }
+
+    if (updatedAny) {
+      try {
+        this.saveConfig(this.platformConfig);
+        this.log.info('Config saved. Restart the plugin for room changes to take effect.');
+      } catch (err) {
+        this.log.error(`Failed to save config: ${err}`);
       }
     }
   }
@@ -247,37 +481,3 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
   }
 }
 
-/**
- * Convert a Roomba `region_id` string to a stable Matter `areaId` (uint32).
- * - Numeric strings ("1", "2", …) → parsed as-is so the number stays recognisable.
- * - Anything else → FNV-1a hash clamped to 31 bits to stay safely within uint32.
- */
-function toAreaId(regionId: string): number {
-  const asNumber = Number(regionId);
-  if (Number.isInteger(asNumber) && asNumber >= 0 && asNumber <= 0x7fffffff) {
-    return asNumber;
-  }
-  // FNV-1a 32-bit for non-numeric region ids (some older pmaps use UUIDs)
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < regionId.length; i++) {
-    hash ^= regionId.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash & 0x7fffffff || 1;
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} after ${ms}ms`)), ms);
-    promise.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
-  });
-}
