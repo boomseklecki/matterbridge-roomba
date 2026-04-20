@@ -1,146 +1,116 @@
 # Onboarding Guide
 
-## Part 1 — Pairing the robot
+End-to-end walkthrough from install to a fully-configured Roomba in your Matter controller. Skim the headings and jump to whichever part you need.
 
-### Server mode (default, recommended)
-
-By default this plugin exposes each robot as its **own independent Matter device** with its own QR code — NOT as a bridged accessory under the Matterbridge aggregator. This is what the roborock plugin does and what Apple Home / Google Home handle best. If you use a Matter controller that struggles with bridged RVC (both Apple and Google have historically), this is the right mode.
-
-**Pairing flow:**
-
-1. Install and start the plugin. Wait for `Connected to Roomba <BLID>` in the Matterbridge log.
-2. Open the Matterbridge frontend (`http://<your-matterbridge-host>:8283`).
-3. You'll see a new server node per robot (e.g. `Rumi`). Click its QR-code icon.
-4. In your Matter controller (Apple Home / Google Home / etc.), add a new accessory and scan the QR code.
-5. The robot pairs as a standalone Matter accessory — with correct vendor (`iRobot`), model (`j517020`), firmware, and serial number.
-
-### Bridged mode (optional)
-
-If you want the robot to appear under the Matterbridge aggregator alongside other Matterbridge plugins (single pairing code for everything), set `"serverMode": false` in the device config. Be aware:
-
-- Apple Home may collapse a single-device bridge oddly and show the vacuum with "Matterbridge" metadata instead of iRobot.
-- A ghost "unsupported device" card can appear for the bridged endpoint.
-
-These issues disappear entirely in server mode, so only choose bridged mode if you know why you want it.
+- [Part 1 — Pairing the robot](#part-1--pairing-the-robot)
+- [Part 2 — Room discovery](#part-2--room-discovery)
+- [Part 3 — Multi-floor homes](#part-3--multi-floor-homes)
+- [Part 4 — Mopping (swappable & combo models)](#part-4--mopping-swappable--combo-models)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
-## Part 2 — Room Discovery
+## Part 1 — Pairing the robot
 
-Roomba stores your room/zone names in the iRobot cloud, not on the robot itself. There is no simple REST endpoint that returns them, so every Roomba-based smart home integration (Home Assistant, rest980, roombapy, and this plugin) uses the same trick: trigger a single-room clean from the iRobot app, capture the region IDs the robot broadcasts over local MQTT, and pair them with friendly names in config.
+### 1a. Install & configure
 
-This plugin automates that with a **discovery mode** that logs the captured IDs in a copy-paste-ready format.
+Follow the **Install** and **Quick start** sections in [README.md](./README.md). The simplest path is cloud-assisted onboarding: paste your iRobot account email / password + the robot's LAN IP, and the plugin auto-fetches BLID + local MQTT password.
 
-## Step-by-step
+### 1b. Server mode vs bridged mode
 
-### 1. Make sure the plugin is connected to your robot
+By default every robot is exposed as its **own independent Matter device** (`"serverMode": true`) with a separate QR code shown in the Matterbridge frontend. This is what other vacuum plugins do and what Apple Home / Google Home handle best.
 
-Check the Matterbridge log for:
+If you prefer a single pairing code for all your Matterbridge plugins and accept that the robot's metadata will show as "Matterbridge" in some controllers, set `"serverMode": false` per device.
+
+### 1c. Commission in your Matter controller
+
+1. Wait for `Registered Roomba device: <name>` in the Matterbridge log.
+2. Open the Matterbridge frontend (`http://<matterbridge-host>:8283`).
+3. You'll see a new device tile per robot (e.g. `Rumi`) with a QR-code icon. Click it.
+4. In Apple Home / Google Home / etc., add a new accessory and scan the QR.
+5. After commissioning, the accessory detail panel should show vendor `iRobot`, model (e.g. `j517020`), and firmware (e.g. `amethyst+24.29.3+…`). If it shows `Matterbridge 3.7.4` instead, remove the accessory and re-pair — HomeKit caches metadata at pairing time.
+
+> **During commissioning** Apple Home labels the device "Matter Accessory" because we use the CSA test VendorID (`0xfff1`). This is a CSA-certification thing, not a bug. After commissioning, the accessory shows `iRobot` correctly.
+
+---
+
+## Part 2 — Room discovery
+
+Roomba stores room / zone names **in the iRobot cloud**, not on the robot. No local API returns them. Every Roomba smart-home integration uses the same trick: trigger a clean from the iRobot app, capture region IDs from the robot's MQTT state, and pair them with friendly names.
+
+This plugin automates the capture and offers a one-click **"Save discovered rooms to config"** action.
+
+### 2a. Turn discovery on
+
+In the Matterbridge frontend, open the plugin's config UI (gear icon) → expand `devices[0]` → flip **`discoverRooms`** to `true` → **Confirm** → restart the plugin.
+
+In the log, you'll see:
 
 ```
-[matterbridge-roomba] Connected to Roomba <BLID>
-[matterbridge-roomba] Registered Roomba device: <name>
+[Rumi] Room discovery mode is ON. Clean rooms ONE AT A TIME from the iRobot app
+       — each mission will be logged with its region id and timestamp so you can tell
+       which room is which.
 ```
 
-If you don't see both, fix that first.
+### 2b. Clean each room from the iRobot app
 
-### 2. Turn discovery mode on
+1. Open the iRobot Home app → pick your robot → tap the room selector → select **one room** → start cleaning.
+2. Wait a few seconds. You'll see a log like:
+   ```
+   [Rumi] Mission "start" at 10:23:45 PM: regions=[3] (NEW: 3). (If you just cleaned
+          a single room in the iRobot app, region 3 = that room.)
+   ```
+3. Stop the clean and send the robot home. Move on to the next room.
+4. Repeat for every room you want controllable from Matter.
 
-Open the plugin config (`<matterbridge homedir>/.matterbridge/matterbridge-roomba.config.json`, or the Config UI in the Matterbridge frontend) and set:
+> Shortcut: "Clean My Home" visits every room in one mission — the plugin captures all regions at once.
+
+### 2c. Save discoveries to config
+
+In the Matterbridge frontend, open the plugin's config UI → flip **`Save discovered rooms to config`** to `true` → **Confirm**. (The toggle auto-resets after processing.)
+
+The plugin writes `rooms[]` (or `maps[]` + `rooms[]` for multi-floor — see Part 3) back to your config:
 
 ```jsonc
-{
-  "devices": [
-    {
-      "name": "Rumi",
-      "blid": "…",
-      "password": "…",
-      "ipAddress": "192.168.x.y",
-      "discoverRooms": true   // ← turn this on
-      // leave the existing "rooms" in place or omit it
-    }
-  ]
-}
+"rooms": [
+  { "areaId": 1, "regionId": "1", "regionType": "rid", "name": "Room 1", "type": null },
+  { "areaId": 3, "regionId": "3", "regionType": "rid", "name": "Room 3", "type": null },
+  …
+]
 ```
 
-Restart the Matterbridge add-on. You should see one log line per device:
+### 2d. Rename
 
-```
-[Rumi] Room discovery mode is ON. Start a single-room or "Clean My Home" mission
-       from the iRobot app for each room you want exposed. Each new region will be
-       logged here in copy-paste form.
-```
-
-### 3. Clean one room at a time from the iRobot app
-
-1. Open the iRobot Home app on your phone.
-2. Pick your robot, tap the room-selector, select a **single room**, and start cleaning.
-3. Wait a few seconds — the plugin log will print something like:
-
-   ```
-   [Rumi] Discovered 1 room(s) on map 012345-abcd-…:
-     "rooms": [
-       { "areaId": 1, "name": "Room 1 (rename me)", "type": null }
-     ]
-     pmapId=012345-abcd-… userPmapvId=67890-efgh-…
-   ```
-
-4. You can **stop the clean immediately** — the discovery only needs the first state message that carries the region id. Send the robot back to the dock and move on to the next room.
-5. Repeat for every room you want exposed.
-
-> Shortcut: starting a **"Clean My Home"** mission that visits all rooms in one go also works — the plugin will log all regions at once as they're reported.
-
-### 4. Copy the logged snippet into your config
-
-Each time a new region is seen the plugin re-emits the **whole** accumulated list, so you only need to copy the *last* log entry. Replace the `discoverRooms: true` block with something like:
-
-```jsonc
-{
-  "devices": [
-    {
-      "name": "Rumi",
-      "blid": "…",
-      "password": "…",
-      "ipAddress": "192.168.x.y",
-      "rooms": [
-        { "areaId": 1, "name": "Living Room", "type": "LivingRoom" },
-        { "areaId": 2, "name": "Kitchen",     "type": "Kitchen"    },
-        { "areaId": 3, "name": "Bedroom",     "type": "Bedroom"    }
-      ]
-      // "discoverRooms" removed or set back to false
-    }
-  ]
-}
-```
-
-#### Recognised `type` values
-
-The `type` maps to a Matter AreaNamespace semantic tag — controllers can use this to pick a nice icon or group rooms by purpose. Supported values (case-insensitive, `-`/`_`/space tolerated):
+Open the plugin config UI again, expand each room in the `rooms` array, and change `name` to your friendly label. Optionally set `type` to one of:
 
 `Bathroom`, `Bedroom`, `BreakfastRoom`, `Cellar`, `Closet`, `Dining`, `FamilyRoom`, `Foyer`, `GameRoom`, `Garage`, `GuestBathroom`, `GuestBedroom`, `GuestRoom`, `Gym`, `Hallway`, `Kidsroom`, `Kitchen`, `Laundry`, `Library`, `Living` / `LivingRoom`, `Lounge`, `Mudroom`, `Office`, `Pantry`, `Patio`, `Playroom`, `PrimaryBathroom`, `PrimaryBedroom`, `Recroom` / `RecreationRoom`, `Staircase`, `StorageRoom`, `Study`, `SunRoom`
 
-Unknown values fall back to `null` (no semantic tag, name still shows).
+(Case-insensitive; `-`/`_`/space tolerated.)
 
-### 5. Restart the plugin
+### 2e. Turn discovery off, restart
 
-One more restart and your rooms will show up in Apple Home / Google Home / whatever Matter controller you're using, with real names instead of the generic placeholders.
+Flip **`discoverRooms`** back to `false`, **Confirm**, restart the plugin. Your rooms show up in Apple Home / Google Home / wherever, with the right names and icons.
 
-### Multi-floor homes (j7+, j9+, s9+)
+After this: "Hey Siri, tell Rumi to clean the kitchen" works.
 
-If your Roomba stores **multiple persistent maps** — one per floor — run discovery **once per floor**:
+---
 
-1. Set `discoverRooms: true`, restart the plugin.
-2. Place the robot on floor 1. From the iRobot app, either clean individual rooms or run a whole-floor mission. The plugin captures the first pmap's rooms.
-3. **Move the robot to floor 2** (carry it up; pmap auto-switch on some models, manual-select on others via the iRobot app's map selector).
-4. Clean rooms on floor 2 from the iRobot app. The plugin captures the second pmap's rooms under a distinct pmapId.
-5. Click **"Save discovered rooms to config"** in the Matterbridge frontend.
+## Part 3 — Multi-floor homes
 
-The plugin detects that it has rooms from two (or more) pmaps and writes a `maps[]` array automatically:
+If your Roomba stores **multiple persistent maps** (j7+, j9+, s9+ with Imprint Smart Maps across floors), repeat the discovery once per floor:
+
+1. Turn `discoverRooms` on, restart.
+2. Place the robot on floor 1. Clean rooms from the iRobot app. Plugin captures pmap A.
+3. **Carry the robot to floor 2.** Pmap auto-switches on some firmware; on others you have to pick the map in the iRobot app's map selector first.
+4. Clean rooms on floor 2. Plugin captures pmap B under a distinct `pmap_id`.
+5. Hit **Save discovered rooms to config**.
+
+The plugin detects that it has rooms from 2+ pmaps and writes:
 
 ```jsonc
 "maps": [
-  { "mapId": 1, "name": "Map 1", "pmapId": "…", "userPmapvId": "…" },
-  { "mapId": 2, "name": "Map 2", "pmapId": "…", "userPmapvId": "…" }
+  { "mapId": 1, "name": "Map 1", "pmapId": "<first-pmap>", "userPmapvId": "…" },
+  { "mapId": 2, "name": "Map 2", "pmapId": "<second-pmap>", "userPmapvId": "…" }
 ],
 "rooms": [
   { "areaId": 1, "mapId": 1, "regionId": "1", "name": "Room 1", … },
@@ -149,18 +119,69 @@ The plugin detects that it has rooms from two (or more) pmaps and writes a `maps
 ]
 ```
 
-Rename the maps (`"Map 1"` → `"Main Floor"`) and rooms, then restart. Your Matter controller will show the rooms grouped by floor.
+Rename maps (`"Map 1"` → `"Main Floor"`, `"Map 2"` → `"Upstairs"`) and rooms, restart. Your controller shows rooms grouped by floor.
+
+> Single-floor config (`rooms[]` + top-level `pmapId`) and multi-floor config (`maps[]` + tagged `rooms[]`) are both valid — the plugin picks the right shape based on how many pmaps it sees during discovery.
+
+---
+
+## Part 4 — Mopping (swappable & combo models)
+
+The plugin exposes clean modes based on your robot's family:
+
+| Family | Example SKUs | Modes exposed |
+|---|---|---|
+| Vacuum-only | 900-series, i1–i4, s9 (non-combo) | `Vacuum`, `Deep Clean` |
+| Swappable | j5, j6, some i7s | `Vacuum`, `Deep Clean`, `Mop` |
+| Combo | j7 Combo, j9 Combo, s9+ Combo | `Vacuum`, `Deep Clean`, `Mop`, `Vacuum then Mop` |
+| Mop-only | Braava m6, m8 | `Mop` |
+
+Family is detected at startup from the robot's SKU (`sku` in MQTT state). Check the startup log:
+
+```
+[Rumi] Classified as family "swappable" (sku=j517020)
+```
+
+### 4a. Swappable models (j5 / j6)
+
+The bin and mop reservoir are **mutually exclusive**: you physically swap one for the other.
+
+- When the bin is installed → `Mop` mode is **currently unavailable**. If you pick it anyway, the plugin blocks the clean with a log message: *"Swap in the mop reservoir first — the bin is currently installed."*
+- When the mop reservoir is installed → `Vacuum` / `Deep Clean` modes are blocked with a similar message.
+
+Matterbridge's cluster server doesn't let plugins reject the Matter `changeToMode` command with an `InvalidInMode` response directly, so Matter still shows the mode as selected. The gating happens at **start-of-clean** time instead — the user sees the helpful message in the log and the robot doesn't start a no-op clean.
+
+### 4b. Combo models (j7/j9 Combo)
+
+Bin and tank are integrated. The robot auto-picks the right tool per surface (vacuum on carpet, mop on hard floor). All clean modes are always available.
+
+When `Mop` or `Vacuum then Mop` is selected but the robot reports `detectedPad: invalid` (pad misseated), the plugin blocks the clean with *"Mop pad is missing or not detected. Reseat the pad."*
+
+### 4c. Mop-only models (Braava)
+
+Only `Mop` mode is exposed. `Vacuum` and `Deep Clean` aren't options.
+
+---
 
 ## Troubleshooting
 
-**I don't see any discovery log after starting a clean.**
+**No discovery log after starting a clean.**
+Confirm the plugin is connected (`Connected to Roomba <BLID>` in the log). If yes but still no log, try the iRobot app's "Clean My Home" button — some firmware versions only populate `lastCommand.regions` on multi-room missions.
 
-Double-check the plugin is actually connected (look for `Connected to Roomba`). Also try the iRobot app's **"Clean My Home"** button — some firmware versions only populate `lastCommand.regions` on multi-room missions, not single-room.
-
-**My region IDs are strings like `abc-123`, not numbers.**
-
-The plugin automatically hashes non-numeric region IDs into stable numeric `areaId`s. You can use the logged `areaId` as-is; it will remain consistent across restarts because the hash is deterministic.
+**My region IDs are UUIDs (`abc-123-…`), not integers.**
+Fine — the plugin hashes non-numeric IDs into stable uint32 areaIds. The hash is deterministic so the same region always gets the same areaId across restarts.
 
 **Cleaning a specific room from Apple Home doesn't actually clean that room.**
+Re-run discovery — the room's `regionId` or your device's `pmapId` is probably missing. You'll see a warning at clean time: *"selectAreas referenced Matter areaId(s) [X] that have no regionId in config — falling back to whole-home clean."*
 
-Currently the plugin only reports rooms for display. Wiring the Matter `selectAreas` command back to a `cleanRoom` call with the correct `pmapId` / `user_pmapv_id` is on the roadmap. For now, use your iRobot app for room-targeted cleans; everything-else (start/stop/pause/dock) works from any Matter controller.
+**Multi-room clean shows the wrong "currently cleaning" room in Apple Home.**
+Roomba doesn't report per-region progress during a mission on j-series firmware — the plugin falls back to a sqft-based (and time-based) heuristic. Tune `roomCleanSqft` (default 75) if rooms flip too early or too late. Pressing **Skip** in the iRobot app advances `currentArea` instantly and correctly.
+
+**Apple Home's "Send to Dock" loops the robot.**
+Fixed in v1.1.1. The plugin now `stop()`s before `dock()` to cancel any paused mission — the firmware-level trigger for the loop.
+
+**Battery and charge state frozen at 80% / "Not Charging" after a restart.**
+Fixed in v1.1.1. The reconnect path now calls `markActive()` alongside `initializeState()`, so state updates propagate after recovery.
+
+**"The plugin disconnected and can't reconnect."**
+Roomba only allows **one** local MQTT connection at a time. If the iRobot app is open, or Home Assistant's `roomba` integration is enabled, or any other tool is connected, ours gets refused. Close the iRobot app and disable competing integrations.
