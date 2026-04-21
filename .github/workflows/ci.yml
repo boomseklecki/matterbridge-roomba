@@ -6,15 +6,29 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+  # Nightly run against the Matterbridge `dev` tag so we catch upstream
+  # breakage early (the `dev` job is `continue-on-error`, see below).
+  schedule:
+    - cron: '17 6 * * *'
 
 jobs:
   build:
-    name: Build & test (Node ${{ matrix.node }})
+    name: Build & test (Node ${{ matrix.node }}, matterbridge@${{ matrix.matterbridge }})
     runs-on: ubuntu-latest
+    # Failures against the `dev` tag shouldn't fail the overall workflow —
+    # upstream breakage is informational, not our bug. The matrix entry still
+    # reports red so we see it on the PR page / Actions dashboard.
+    continue-on-error: ${{ matrix.matterbridge == 'dev' }}
     strategy:
       fail-fast: false
       matrix:
         node: ['18', '20', '22', '24']
+        matterbridge: ['latest']
+        include:
+          # Also run Node 22 (current LTS) against the matterbridge `dev` tag
+          # so we know about upcoming API changes before they ship.
+          - node: '22'
+            matterbridge: 'dev'
 
     steps:
       - uses: actions/checkout@v4
@@ -30,9 +44,9 @@ jobs:
 
       # Matterbridge is a peer dep — we don't declare it in package.json (to avoid
       # plugin duplication at runtime), so install it globally and link before build.
-      - name: Install and link Matterbridge
+      - name: Install and link Matterbridge (${{ matrix.matterbridge }})
         run: |
-          npm install --global matterbridge
+          npm install --global matterbridge@${{ matrix.matterbridge }}
           npm link matterbridge
 
       - name: Build
