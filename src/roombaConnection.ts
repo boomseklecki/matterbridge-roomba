@@ -40,6 +40,26 @@ export interface RoombaRoomConfig {
    * map. If `maps` is empty/unset, ignored.
    */
   mapId?: number;
+  /**
+   * Roomba's `favorite_id` for a saved mission. When set, dispatches a
+   * `cleanRoom` with `favorite_id` + the captured `missionRegions` payload.
+   * Takes priority over `regionId` and `missionRegionIds`.
+   */
+  favoriteId?: string;
+  /**
+   * Full region payload captured from `lastCommand` when `favoriteId` was
+   * first discovered. Replayed on dispatch so per-region params (twoPass,
+   * carpetBoost, etc.) are preserved exactly as configured in the iRobot app.
+   * Auto-populated by `applyDiscoveredRooms`; can be left empty to let the
+   * robot use its stored favorite preferences.
+   */
+  missionRegions?: Array<{ regionId: string; type: string; params?: Record<string, unknown> }>;
+  /**
+   * Pre-bundled list of regionIds to clean as a single area. When set, all
+   * listed regions are included in one `cleanRoom` call. Use for a named
+   * multi-room preset (e.g. "Main Floor").
+   */
+  missionRegionIds?: string[];
 }
 
 /**
@@ -166,6 +186,14 @@ export interface DiscoveredMap {
   regions: DiscoveredRegion[];
 }
 
+export interface DiscoveredFavorite {
+  favoriteId: string;
+  pmapId: string;
+  userPmapvId?: string;
+  /** Full region payload including per-region params — captured from lastCommand so it can be replayed exactly. */
+  regions: Array<{ regionId: string; type: string; params?: Record<string, unknown> }>;
+}
+
 export interface RoombaInfo {
   name: string;
   sku: string;
@@ -260,6 +288,8 @@ export class RoombaConnection extends EventEmitter {
   private readonly idleRefreshMs: number;
   /** Accumulated map of pmap_id -> discovered rooms, populated while `discoverRooms` is on. */
   private readonly discoveredMaps = new Map<string, DiscoveredMap>();
+  /** Accumulated map of favorite_id -> discovered missions. */
+  private readonly discoveredFavorites = new Map<string, DiscoveredFavorite>();
 
   constructor(
     private readonly config: RoombaDeviceConfig,
@@ -423,65 +453,109 @@ export class RoombaConnection extends EventEmitter {
   }
 
   /**
-   * If a `lastCommand` with regions has just arrived, merge its regions into the discovered
-   * map set and emit a `roomsDiscovered` event with the accumulated catalog.
-   * Also emits a per-mission `roomsInMission` event describing what was in the command
-   * we just observed — handy for correlating region IDs with the room you pressed
-   * "Clean" on in the iRobot app.
+   * If a `lastCommand` has just arrived, capture room and/or mission discovery data.
+   *
+   * Branch 1 — region discovery: merge region IDs into the discovered map catalog
+   * and emit `roomsInMission` / `roomsDiscovered` so listeners can correlate IDs
+   * with the room just cleaned in the iRobot app.
+   *
+   * Branch 2 — favorite discovery: capture `favorite_id` + full region payload
+   * (including per-region params) so the mission can be replayed exactly later.
+   * Favorites often include regions too, so both branches fire on the same command.
    */
   private captureDiscovery(state: RobotState): void {
     const lc = state.lastCommand;
-    if (!lc || !lc.pmap_id || !Array.isArray(lc.regions) || lc.regions.length === 0) return;
+    if (!lc || !lc.pmap_id) return;
 
     // Only fire once per distinct mission (lastCommand.time is the mission timestamp).
     if (lc.time && lc.time === this.lastSeenCommandTime) return;
     this.lastSeenCommandTime = lc.time;
 
-    const existing = this.discoveredMaps.get(lc.pmap_id) ?? {
-      pmapId: lc.pmap_id,
-      userPmapvId: lc.user_pmapv_id,
-      regions: [],
-    };
-    if (lc.user_pmapv_id) existing.userPmapvId = lc.user_pmapv_id;
+    const hasRegions = Array.isArray(lc.regions) && lc.regions.length > 0;
 
-    const newRegionIds: string[] = [];
-    for (const region of lc.regions) {
-      if (!region || !region.region_id) continue;
-      if (existing.regions.some((r) => r.regionId === region.region_id)) continue;
-      existing.regions.push({
-        regionId: region.region_id,
-        type: region.type ?? 'rid',
-        firstSeen: Date.now(),
+    // Branch 1: region-based room discovery.
+    if (hasRegions) {
+      const existing = this.discoveredMaps.get(lc.pmap_id) ?? {
+        pmapId: lc.pmap_id,
+        userPmapvId: lc.user_pmapv_id,
+        regions: [],
+      };
+      if (lc.user_pmapv_id) existing.userPmapvId = lc.user_pmapv_id;
+
+      const newRegionIds: string[] = [];
+      for (const region of lc.regions!) {
+        if (!region || !region.region_id) continue;
+        if (existing.regions.some((r) => r.regionId === region.region_id)) continue;
+        existing.regions.push({
+          regionId: region.region_id,
+          type: region.type ?? 'rid',
+          firstSeen: Date.now(),
+        });
+        newRegionIds.push(region.region_id);
+      }
+      this.discoveredMaps.set(lc.pmap_id, existing);
+
+      // Per-mission event: tell listeners what was in THIS command (regardless of
+      // whether it's new or a repeat). This is what makes "clean one room, see its id"
+      // work as an identification strategy.
+      this.emit('roomsInMission', {
+        pmapId: lc.pmap_id,
+        userPmapvId: lc.user_pmapv_id,
+        command: lc.command,
+        selectAll: lc.select_all ?? false,
+        regions: lc.regions!.map((r) => ({
+          regionId: r.region_id,
+          type: r.type ?? 'rid',
+          params: r.params,
+        })),
+        newRegionIds,
+        time: lc.time,
+        favoriteId: lc.favorite_id,
       });
-      newRegionIds.push(region.region_id);
+
+      if (newRegionIds.length > 0) {
+        this.emit('roomsDiscovered', Array.from(this.discoveredMaps.values()));
+      }
     }
-    this.discoveredMaps.set(lc.pmap_id, existing);
 
-    // Per-mission event: tell listeners what was in THIS command (regardless of
-    // whether it's new or a repeat). This is what makes "clean one room, see its id"
-    // work as an identification strategy.
-    this.emit('roomsInMission', {
-      pmapId: lc.pmap_id,
-      userPmapvId: lc.user_pmapv_id,
-      command: lc.command,
-      selectAll: lc.select_all ?? false,
-      regions: lc.regions.map((r) => ({
-        regionId: r.region_id,
-        type: r.type ?? 'rid',
-        params: r.params,
-      })),
-      newRegionIds,
-      time: lc.time,
-    });
+    // Branch 2: favorite/mission discovery. Capture the full payload so it can
+    // be replayed exactly (preserving per-region params like twoPass, carpetBoost).
+    if (lc.favorite_id) {
+      this.discoveredFavorites.set(lc.favorite_id, {
+        favoriteId: lc.favorite_id,
+        pmapId: lc.pmap_id,
+        userPmapvId: lc.user_pmapv_id,
+        regions: (lc.regions ?? []).map((r) => ({
+          regionId: r.region_id,
+          type: r.type ?? 'rid',
+          params: r.params,
+        })),
+      });
 
-    if (newRegionIds.length > 0) {
-      this.emit('roomsDiscovered', Array.from(this.discoveredMaps.values()));
+      // Emit roomsInMission for the favorite-only case (no regions in command).
+      if (!hasRegions) {
+        this.emit('roomsInMission', {
+          pmapId: lc.pmap_id,
+          userPmapvId: lc.user_pmapv_id,
+          command: lc.command,
+          selectAll: false,
+          regions: [],
+          newRegionIds: [],
+          time: lc.time,
+          favoriteId: lc.favorite_id,
+        });
+      }
     }
   }
 
   /** Returns the current discovery catalog (may be empty). */
   getDiscoveredMaps(): DiscoveredMap[] {
     return Array.from(this.discoveredMaps.values());
+  }
+
+  /** Returns all favorites/missions captured from lastCommand (may be empty). */
+  getDiscoveredFavorites(): DiscoveredFavorite[] {
+    return Array.from(this.discoveredFavorites.values());
   }
 
   /** Signature of the last mission/command/pose/bbmssn slice we logged, for dedup. */
@@ -798,6 +872,26 @@ export class RoombaConnection extends EventEmitter {
       ordered: 1,
       pmap_id: pmapId,
       user_pmapv_id: userPmapvId,
+      regions,
+    });
+  }
+
+  /**
+   * Dispatch a saved Roomba mission by `favorite_id`, replaying the full region
+   * payload (including per-region params) exactly as captured from `lastCommand`.
+   */
+  async cleanRoomByFavorite(
+    pmapId: string,
+    userPmapvId: string | undefined,
+    favoriteId: string,
+    regions: Array<{ region_id: string; type: string; params?: Record<string, unknown> }>,
+  ): Promise<void> {
+    if (!this.robot) throw new Error('Not connected');
+    await this.robot.cleanRoom({
+      ordered: 0,
+      pmap_id: pmapId,
+      user_pmapv_id: userPmapvId,
+      favorite_id: favoriteId,
       regions,
     });
   }

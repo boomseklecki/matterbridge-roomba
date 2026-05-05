@@ -617,11 +617,52 @@ export class RoombaDevice {
     // so we can verify the mission doesn't cross maps (the robot can't physically
     // clean rooms on two different pmaps in one mission — they're typically
     // different floors).
-    const regions: Array<{ region_id: string; type: string }> = [];
+    const regions: Array<{ region_id: string; type: string; params?: Record<string, unknown> }> = [];
     const unmappedAreas: number[] = [];
     const selectedMapIds = new Set<number | undefined>();
     for (const areaId of this.selectedAreas) {
       const room = this.rooms.find((r) => r.areaId === areaId);
+
+      // Favorite/mission path: dispatch the saved job by favorite_id, replaying
+      // the full region payload (including per-region params) captured at discovery.
+      if (room?.favoriteId) {
+        if (this.selectedAreas.length > 1) {
+          this.log.warn(`favoriteId area selected with other areas — only running the favorite for "${room.name}"`);
+        }
+        const missionMapId = room.mapId;
+        const activeMap = missionMapId !== undefined ? this.maps.find((m) => m.mapId === missionMapId) : undefined;
+        const pmapId = activeMap?.pmapId ?? this.pmapId;
+        const userPmapvId = activeMap?.userPmapvId ?? this.userPmapvId;
+        if (!pmapId) {
+          this.log.warn(`favoriteId area "${room.name}" has no pmapId — falling back to whole-home clean.`);
+          this.setCurrentArea(null);
+          await this.connection.clean();
+          return;
+        }
+        const replayRegions = (room.missionRegions ?? []).map((r) => ({
+          region_id: r.regionId,
+          type: r.type,
+          params: r.params,
+        }));
+        this.log.info(
+          `Starting saved-mission clean: favorite_id=${room.favoriteId} on pmap ${pmapId}` +
+            (replayRegions.length > 0 ? ` with ${replayRegions.length} region(s)` : ''),
+        );
+        this.setCurrentArea(areaId);
+        await this.connection.cleanRoomByFavorite(pmapId, userPmapvId, room.favoriteId, replayRegions);
+        return;
+      }
+
+      // missionRegionIds path: a named multi-room preset specified as a list of
+      // region IDs. All regions are included in one cleanRoom call.
+      if (room?.missionRegionIds && room.missionRegionIds.length > 0) {
+        for (const rid of room.missionRegionIds) {
+          regions.push({ region_id: rid, type: room.regionType ?? 'rid' });
+        }
+        selectedMapIds.add(room.mapId);
+        continue;
+      }
+
       if (!room || !room.regionId) {
         unmappedAreas.push(areaId);
         continue;

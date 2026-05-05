@@ -85,6 +85,7 @@ declare module 'dorita980' {
         params?: Record<string, unknown>;
       }>;
       select_all?: boolean;
+      favorite_id?: string;
     };
     [key: string]: unknown;
   }
@@ -113,6 +114,7 @@ declare module 'dorita980' {
       ordered: number;
       pmap_id: string;
       user_pmapv_id?: string;
+      favorite_id?: string;
       regions: Array<{ region_id: string; type: string; params?: Record<string, unknown> }>;
     }): Promise<void>;
     pause(): Promise<void>;

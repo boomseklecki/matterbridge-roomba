@@ -208,6 +208,28 @@
                   "description": "If `maps` is configured (multi-floor home), this points the room at one of those maps. Falls back to the first configured map if omitted. Ignored when `maps` is empty.",
                   "type": "integer",
                   "minimum": 1
+                },
+                "favoriteId": {
+                  "description": "Roomba's favorite_id for a saved mission. When set, cleans via favorite_id instead of regions. Auto-populated by applyDiscoveredRooms when you run a saved iRobot app job in discovery mode.",
+                  "type": "string"
+                },
+                "missionRegions": {
+                  "description": "Full region payload captured from lastCommand when this favorite was discovered. Replayed on dispatch to preserve per-region cleaning params (twoPass, carpetBoost, etc.). Auto-populated by applyDiscoveredRooms.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "regionId": { "type": "string" },
+                      "type": { "type": "string", "default": "rid" },
+                      "params": { "type": "object" }
+                    },
+                    "required": ["regionId", "type"]
+                  }
+                },
+                "missionRegionIds": {
+                  "description": "Pre-bundled list of region IDs to clean as a single selectable area. All listed regions are included in one cleanRoom call. Use for a named multi-room preset (e.g. Main Floor). For per-region param control, use favoriteId+missionRegions instead.",
+                  "type": "array",
+                  "items": { "type": "string" }
                 }
               },
               "required": ["areaId", "name"]

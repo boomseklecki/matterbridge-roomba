@@ -21,6 +21,7 @@ interface RoomsInMissionPayload {
   regions: Array<{ regionId: string; type: string; params?: Record<string, unknown> }>;
   newRegionIds: string[];
   time?: number;
+  favoriteId?: string;
 }
 
 interface CloudCredentials {
@@ -278,11 +279,21 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     const ids = mission.regions.map((r) => `${r.regionId}${r.type !== 'rid' ? `(${r.type})` : ''}`).join(', ');
     const newSuffix = mission.newRegionIds.length > 0 ? ` (NEW: ${mission.newRegionIds.join(', ')})` : '';
     const ts = mission.time ? new Date(mission.time * 1000).toLocaleTimeString() : 'unknown';
-    this.log.info(
-      `[${deviceLabel}] Mission "${mission.command ?? 'start'}" at ${ts}: ` +
-        `${mission.selectAll ? 'whole home' : `regions=[${ids}]`}${newSuffix}. ` +
-        `(If you just cleaned a single room in the iRobot app, region ${ids} = that room.)`,
-    );
+    if (mission.favoriteId) {
+      this.log.info(
+        `[${deviceLabel}] Mission "${mission.command ?? 'start'}" at ${ts}: ` +
+          `favorite_id=${mission.favoriteId}` +
+          (ids ? ` regions=[${ids}]` : '') +
+          `${newSuffix}. ` +
+          `Run applyDiscoveredRooms to add this as a selectable area (or add manually with favoriteId: "${mission.favoriteId}").`,
+      );
+    } else {
+      this.log.info(
+        `[${deviceLabel}] Mission "${mission.command ?? 'start'}" at ${ts}: ` +
+          `${mission.selectAll ? 'whole home' : `regions=[${ids}]`}${newSuffix}. ` +
+          `(If you just cleaned a single room in the iRobot app, region ${ids} = that room.)`,
+      );
+    }
   }
 
   /**
@@ -523,6 +534,39 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
           newMaps.map((m) => `${m.name} (pmap ${m.pmapId})`).join(', ') +
           '. Rename maps and rooms in the config UI, then restart the plugin.',
       );
+    }
+
+    // Apply discovered favorites/missions. These are appended after room discovery
+    // so they don't interfere with the room-merging logic above.
+    for (const deviceConfig of devices) {
+      const connection = this.connections.get(deviceConfig.blid);
+      if (!connection) continue;
+      const discoveredFavorites = connection.getDiscoveredFavorites();
+      if (discoveredFavorites.length === 0) continue;
+
+      const existingFavoriteIds = new Set(
+        (deviceConfig.rooms ?? []).map((r) => r.favoriteId).filter(Boolean),
+      );
+      let addedCount = 0;
+      for (const fav of discoveredFavorites) {
+        if (existingFavoriteIds.has(fav.favoriteId)) continue;
+        const areaId = toAreaId(fav.favoriteId);
+        deviceConfig.rooms = deviceConfig.rooms ?? [];
+        deviceConfig.rooms.push({
+          areaId,
+          name: `Saved Job ${fav.favoriteId}`,
+          favoriteId: fav.favoriteId,
+          missionRegions: fav.regions,
+        });
+        addedCount++;
+        updatedAny = true;
+      }
+      if (addedCount > 0) {
+        const deviceLabel = deviceConfig.name ?? deviceConfig.blid;
+        this.log.info(
+          `[${deviceLabel}] Added ${addedCount} saved mission(s). Rename them in the config UI, then restart the plugin.`,
+        );
+      }
     }
 
     if (updatedAny) {
