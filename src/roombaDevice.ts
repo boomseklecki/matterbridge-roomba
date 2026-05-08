@@ -1042,6 +1042,16 @@ export class RoombaDevice {
   initializeState(): void {
     const status = this.connection.getStatus();
     this.updateMatterState(status);
+    // Proactively apply the iOS workaround at startup: pre-populate SelectedAreas
+    // with the full room list so iOS Home shows "All Rooms" rather than "This vacuum
+    // has no rooms to select" before the user has interacted with the picker.
+    if (this.iosAllRoomsWorkaround && this.rooms.length > 0 && this.endpointActive) {
+      try {
+        this.device.setAttribute('serviceArea', 'selectedAreas', this.rooms.map((r) => r.areaId), this.log);
+      } catch {
+        // ignore — attribute write may fail if cluster isn't ready yet
+      }
+    }
   }
 }
 
