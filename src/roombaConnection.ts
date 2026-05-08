@@ -521,6 +521,12 @@ export class RoombaConnection extends EventEmitter {
     // Branch 2: favorite/mission discovery. Capture the full payload so it can
     // be replayed exactly (preserving per-region params like twoPass, carpetBoost).
     if (lc.favorite_id) {
+      const isNew = !this.discoveredFavorites.has(lc.favorite_id);
+      this.log.info(
+        `${isNew ? 'Captured' : 'Updated'} saved mission: favorite_id=${lc.favorite_id} ` +
+          `pmap=${lc.pmap_id} regions=${(lc.regions ?? []).length}. ` +
+          `Total cached: ${this.discoveredFavorites.size + (isNew ? 1 : 0)}.`,
+      );
       this.discoveredFavorites.set(lc.favorite_id, {
         favoriteId: lc.favorite_id,
         pmapId: lc.pmap_id,

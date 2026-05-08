@@ -8,7 +8,7 @@ import {
   type PlatformMatterbridge,
 } from 'matterbridge';
 import type { AnsiLogger } from 'matterbridge/logger';
-import { RoombaConnection, type DiscoveredMap, type RoombaDeviceConfig } from './roombaConnection.js';
+import { RoombaConnection, type DiscoveredMap, type RoombaDeviceConfig, type RoombaRoomConfig } from './roombaConnection.js';
 import { RoombaDevice } from './roombaDevice.js';
 import { getRoombaCloudCredentials, RoombaCloudError } from './roombaCloud.js';
 import { toAreaId, withTimeout } from './utils.js';
@@ -436,16 +436,34 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     for (const deviceConfig of devices) {
       const connection = this.connections.get(deviceConfig.blid);
       if (!connection) continue;
+
       const discovered = connection.getDiscoveredMaps();
-      if (discovered.length === 0) {
+      const discoveredFavorites = connection.getDiscoveredFavorites();
+
+      this.log.info(
+        `[${deviceConfig.name ?? deviceConfig.blid}] applyDiscoveredRooms: ` +
+          `${discovered.length} map(s) with regions, ${discoveredFavorites.length} saved mission(s).`,
+      );
+
+      if (discovered.length === 0 && discoveredFavorites.length === 0) {
         this.log.info(
-          `[${deviceConfig.name ?? deviceConfig.blid}] No rooms discovered yet. ` +
-            `Turn on discoverRooms, clean each room once from the iRobot app (per floor if multi-floor), then click this again.`,
+          `[${deviceConfig.name ?? deviceConfig.blid}] Nothing discovered yet. ` +
+            `Enable discoverRooms, clean each room once from the iRobot app, then click this again. ` +
+            `Run a saved iRobot mission to discover favorites.`,
         );
         continue;
       }
 
       const deviceLabel = deviceConfig.name ?? deviceConfig.blid;
+
+      // Snapshot existing favorites BEFORE replacing the rooms array so we can
+      // preserve user-assigned names and stable areaIds across repeated applies.
+      const existingFavoritesByFavoriteId = new Map(
+        (deviceConfig.rooms ?? [])
+          .filter((r): r is RoombaRoomConfig & { favoriteId: string } => !!r.favoriteId)
+          .map((r) => [r.favoriteId, r]),
+      );
+
       if (discovered.length === 1) {
         // Single-map case: use the top-level `pmapId`/`userPmapvId` and keep the
         // config shape simple. Preserve any previously user-renamed room names.
@@ -471,101 +489,103 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
         });
         updatedAny = true;
         this.log.info(
-          `[${deviceLabel}] Saved ${deviceConfig.rooms.length} room(s) from pmap ${only.pmapId}. ` +
-            `Rename them in the config UI, then restart the plugin.`,
+          `[${deviceLabel}] Saved ${deviceConfig.rooms.length} room(s) from pmap ${only.pmapId}.`,
         );
-        continue;
-      }
-
-      // Multi-map case: build a `maps[]` array and tag each room with its owning
-      // mapId. Preserve existing `maps` entries (to keep user-chosen names + ids)
-      // by matching on `pmapId`; assign fresh mapIds to any newly-seen pmaps.
-      const existingMapByPmap = new Map((deviceConfig.maps ?? []).map((m) => [m.pmapId, m]));
-      const usedMapIds = new Set(
-        (deviceConfig.maps ?? []).map((m) => m.mapId).filter((id): id is number => typeof id === 'number'),
-      );
-      const nextMapId = (): number => {
-        let id = 1;
-        while (usedMapIds.has(id)) id++;
-        usedMapIds.add(id);
-        return id;
-      };
-
-      const newMaps = discovered.map((disc, idx) => {
-        const existing = existingMapByPmap.get(disc.pmapId);
-        const mapId = existing?.mapId ?? nextMapId();
-        return {
-          mapId,
-          name: existing?.name ?? `Map ${idx + 1}`,
-          pmapId: disc.pmapId,
-          userPmapvId: disc.userPmapvId,
+      } else if (discovered.length > 1) {
+        // Multi-map case: build a `maps[]` array and tag each room with its owning
+        // mapId. Preserve existing `maps` entries (to keep user-chosen names + ids)
+        // by matching on `pmapId`; assign fresh mapIds to any newly-seen pmaps.
+        const existingMapByPmap = new Map((deviceConfig.maps ?? []).map((m) => [m.pmapId, m]));
+        const usedMapIds = new Set(
+          (deviceConfig.maps ?? []).map((m) => m.mapId).filter((id): id is number => typeof id === 'number'),
+        );
+        const nextMapId = (): number => {
+          let id = 1;
+          while (usedMapIds.has(id)) id++;
+          usedMapIds.add(id);
+          return id;
         };
-      });
-      const pmapToMatterMapId = new Map(newMaps.map((m) => [m.pmapId, m.mapId]));
 
-      const existingByAreaId = new Map((deviceConfig.rooms ?? []).map((r) => [r.areaId, r]));
-      const newRooms: typeof deviceConfig.rooms = [];
-      for (const disc of discovered) {
-        const matterMapId = pmapToMatterMapId.get(disc.pmapId);
-        for (const region of disc.regions) {
-          const areaId = toAreaId(region.regionId);
-          const existing = existingByAreaId.get(areaId);
-          newRooms.push({
-            areaId,
-            regionId: region.regionId,
-            regionType: region.type,
-            name: existing?.name ?? `Room ${region.regionId}`,
-            type: existing?.type,
-            floor: existing?.floor,
-            mapId: existing?.mapId ?? matterMapId,
-          });
-        }
-      }
-
-      deviceConfig.maps = newMaps;
-      deviceConfig.rooms = newRooms;
-      // Top-level pmapId is unused in multi-map mode — clear for clarity.
-      // (If user reverts to a single floor later, discovery will rewrite this.)
-      delete deviceConfig.pmapId;
-      delete deviceConfig.userPmapvId;
-      updatedAny = true;
-      this.log.info(
-        `[${deviceLabel}] Saved ${newRooms.length} room(s) across ${newMaps.length} map(s): ` +
-          newMaps.map((m) => `${m.name} (pmap ${m.pmapId})`).join(', ') +
-          '. Rename maps and rooms in the config UI, then restart the plugin.',
-      );
-    }
-
-    // Apply discovered favorites/missions. These are appended after room discovery
-    // so they don't interfere with the room-merging logic above.
-    for (const deviceConfig of devices) {
-      const connection = this.connections.get(deviceConfig.blid);
-      if (!connection) continue;
-      const discoveredFavorites = connection.getDiscoveredFavorites();
-      if (discoveredFavorites.length === 0) continue;
-
-      const existingFavoriteIds = new Set(
-        (deviceConfig.rooms ?? []).map((r) => r.favoriteId).filter(Boolean),
-      );
-      let addedCount = 0;
-      for (const fav of discoveredFavorites) {
-        if (existingFavoriteIds.has(fav.favoriteId)) continue;
-        const areaId = toAreaId(fav.favoriteId);
-        deviceConfig.rooms = deviceConfig.rooms ?? [];
-        deviceConfig.rooms.push({
-          areaId,
-          name: `Saved Job ${fav.favoriteId}`,
-          favoriteId: fav.favoriteId,
-          missionRegions: fav.regions,
+        const newMaps = discovered.map((disc, idx) => {
+          const existing = existingMapByPmap.get(disc.pmapId);
+          const mapId = existing?.mapId ?? nextMapId();
+          return {
+            mapId,
+            name: existing?.name ?? `Map ${idx + 1}`,
+            pmapId: disc.pmapId,
+            userPmapvId: disc.userPmapvId,
+          };
         });
-        addedCount++;
+        const pmapToMatterMapId = new Map(newMaps.map((m) => [m.pmapId, m.mapId]));
+
+        const existingByAreaId = new Map((deviceConfig.rooms ?? []).map((r) => [r.areaId, r]));
+        const newRooms: typeof deviceConfig.rooms = [];
+        for (const disc of discovered) {
+          const matterMapId = pmapToMatterMapId.get(disc.pmapId);
+          for (const region of disc.regions) {
+            const areaId = toAreaId(region.regionId);
+            const existing = existingByAreaId.get(areaId);
+            newRooms.push({
+              areaId,
+              regionId: region.regionId,
+              regionType: region.type,
+              name: existing?.name ?? `Room ${region.regionId}`,
+              type: existing?.type,
+              floor: existing?.floor,
+              mapId: existing?.mapId ?? matterMapId,
+            });
+          }
+        }
+
+        deviceConfig.maps = newMaps;
+        deviceConfig.rooms = newRooms;
+        // Top-level pmapId is unused in multi-map mode — clear for clarity.
+        delete deviceConfig.pmapId;
+        delete deviceConfig.userPmapvId;
         updatedAny = true;
-      }
-      if (addedCount > 0) {
-        const deviceLabel = deviceConfig.name ?? deviceConfig.blid;
         this.log.info(
-          `[${deviceLabel}] Added ${addedCount} saved mission(s). Rename them in the config UI, then restart the plugin.`,
+          `[${deviceLabel}] Saved ${newRooms.length} room(s) across ${newMaps.length} map(s): ` +
+            newMaps.map((m) => `${m.name} (pmap ${m.pmapId})`).join(', ') + '.',
         );
+      }
+
+      // Merge favorites into the (possibly just-rebuilt) rooms array.
+      // Previously-saved favorites not re-discovered this session are preserved as-is
+      // (handles the case where the plugin was restarted between missions and apply).
+      // Discovered favorites are added or updated, preserving user-assigned names.
+      if (discoveredFavorites.length > 0 || existingFavoritesByFavoriteId.size > 0) {
+        deviceConfig.rooms = deviceConfig.rooms ?? [];
+
+        const freshFavoriteIds = new Set(discoveredFavorites.map((f) => f.favoriteId));
+
+        // Keep previously-saved favorites that weren't re-discovered this session.
+        for (const [, savedFav] of existingFavoritesByFavoriteId) {
+          if (!freshFavoriteIds.has(savedFav.favoriteId)) {
+            deviceConfig.rooms.push(savedFav);
+          }
+        }
+
+        // Add/update discovered favorites, preserving name and areaId if previously saved.
+        let addedCount = 0;
+        for (const fav of discoveredFavorites) {
+          const existing = existingFavoritesByFavoriteId.get(fav.favoriteId);
+          deviceConfig.rooms.push({
+            areaId: existing?.areaId ?? toAreaId(fav.favoriteId),
+            name: existing?.name ?? `Saved Job ${fav.favoriteId}`,
+            favoriteId: fav.favoriteId,
+            missionRegions: fav.regions,
+          });
+          if (!existing) addedCount++;
+          updatedAny = true;
+        }
+
+        if (addedCount > 0) {
+          this.log.info(
+            `[${deviceLabel}] Added ${addedCount} new saved mission(s). Rename them in the config UI, then restart the plugin.`,
+          );
+        } else if (discoveredFavorites.length > 0) {
+          this.log.info(`[${deviceLabel}] Updated ${discoveredFavorites.length} saved mission(s).`);
+        }
       }
     }
 
