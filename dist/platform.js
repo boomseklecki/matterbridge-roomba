@@ -343,6 +343,8 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
      */
     async runApplyDiscoveredRooms() {
         const devices = this.platformConfig.devices ?? [];
+        this.log.info(`applyDiscoveredRooms triggered. ${devices.length} device(s) in config, ` +
+            `${this.connections.size} active connection(s).`);
         if (devices.length === 0) {
             this.log.warn('Apply discovered rooms: no devices configured.');
             return;
@@ -350,8 +352,11 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
         let updatedAny = false;
         for (const deviceConfig of devices) {
             const connection = this.connections.get(deviceConfig.blid);
-            if (!connection)
+            if (!connection) {
+                this.log.warn(`[${deviceConfig.name ?? deviceConfig.blid ?? '(no blid)'}] No active connection found ` +
+                    `(blid=${deviceConfig.blid ?? 'undefined'}). Cannot apply discovered rooms for this device.`);
                 continue;
+            }
             const discovered = connection.getDiscoveredMaps();
             const discoveredFavorites = connection.getDiscoveredFavorites();
             this.log.info(`[${deviceConfig.name ?? deviceConfig.blid}] applyDiscoveredRooms: ` +

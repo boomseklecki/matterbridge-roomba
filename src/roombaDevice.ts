@@ -992,18 +992,16 @@ export class RoombaDevice {
             this.missionLastError,
             { binFull: status.binFull },
           ).errorStateId;
+          // operationCompletion is an optional Matter event. Matterbridge 3.7.0
+          // doesn't expose it as emittable — suppress the error log by omitting
+          // the logger and ignoring the returned false.
           this.device
-            .triggerEvent(
-              'rvcOperationalState',
-              'operationCompletion',
-              {
-                completionErrorCode,
-                totalOperationalTime,
-                pausedTime: null,
-              },
-              this.log,
-            )
-            .catch((err) => this.log.debug(`triggerEvent operationCompletion failed: ${err}`));
+            .triggerEvent('rvcOperationalState', 'operationCompletion', {
+              completionErrorCode,
+              totalOperationalTime,
+              pausedTime: null,
+            })
+            .catch(() => undefined);
           this.log.info(
             `Mission completed: errorCode=${completionErrorCode} totalOperationalTime=${totalOperationalTime}s`,
           );
