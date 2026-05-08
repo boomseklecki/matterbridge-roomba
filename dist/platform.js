@@ -265,8 +265,23 @@ export class RoombaMatterbridgePlatform extends MatterbridgeDynamicPlatform {
     async onConfigChanged(config) {
         this.log.debug('Config changed; checking for pending one-shot actions…');
         const next = config;
+        // Capture cloud-resolved blids BEFORE overwriting platformConfig. When
+        // cloud credentials fill blid/password at startup they are not written
+        // back to the config file, so the freshly-deserialized next.devices will
+        // be missing them. We re-apply by matching on ipAddress (always in config).
+        const resolvedBlidByIp = new Map((this.platformConfig.devices ?? [])
+            .filter((d) => d.blid && d.ipAddress)
+            .map((d) => [d.ipAddress, d.blid]));
         // Sync the in-memory config so subsequent operations see fresh values.
         Object.assign(this.platformConfig, next);
+        // Re-apply cloud-resolved blids where the new device configs are missing them.
+        for (const d of this.platformConfig.devices ?? []) {
+            if (!d.blid && d.ipAddress) {
+                const blid = resolvedBlidByIp.get(d.ipAddress);
+                if (blid)
+                    d.blid = blid;
+            }
+        }
         let dirty = false;
         if (next.testCloudLogin) {
             await this.runTestCloudLogin();
